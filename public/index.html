@@ -25,6 +25,7 @@
       <button class="nav-link">📋 Siparişler</button>
       <button class="nav-link">📄 Teklifler</button>
       <button class="nav-link active">💰 Faturalar</button>
+      <a href="/cari-analiz.html" class="nav-link">📊 Cari Analiz</a>
       <button class="nav-link logout">🚪 Çıkış</button>
     </div>
   </nav>
@@ -43,22 +44,22 @@
     <!-- KONTROL BİZDE BİR ID EKLEDİK: id="summaryCardsContainer" -->
     <section class="stats-grid" id="summaryCardsContainer">
       <div class="stat-card">
-        <label>Toplam Borç</label>
+        <label id="stat-label-total">Toplam Borç</label>
         <h2 id="stat-total-debt" class="text-danger">0,00 ₺</h2>
         <small id="stat-supplier-count">0 Tedarikçi</small>
       </div>
       <div class="stat-card">
-        <label>Bu Ay Ödenecek</label>
+        <label id="stat-label-monthly">Bu Ay Ödenecek</label>
         <h2 id="stat-monthly-debt">0,00 ₺</h2>
         <small>Vadeye göre</small>
       </div>
       <div class="stat-card highlight-warn">
-        <label>Vadesi Geçmiş</label>
+        <label id="stat-label-overdue">Vadesi Geçmiş</label>
         <h2 id="stat-overdue" class="text-warn">0,00 ₺</h2>
         <small id="stat-overdue-count">0 Fatura</small>
       </div>
       <div class="stat-card highlight-success">
-        <label>Toplam Ödenen</label>
+        <label id="stat-label-paid">Toplam Ödenen</label>
         <h2 id="stat-paid" class="text-success">0,00 ₺</h2>
         <small id="stat-paid-count">0 Fatura</small>
       </div>
@@ -140,6 +141,8 @@
               <th class="text-right">Matrah</th>
               <th class="text-right">KDV</th>
               <th class="text-right">Toplam</th>
+              <th class="text-right">Ödenen</th>
+              <th class="text-right">Kalan</th>
               <th>Durum</th>
               <th class="text-center">İşlem</th>
             </tr>
@@ -384,6 +387,16 @@
           <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 16px;">
             <span style="font-size: 10px; font-weight: 800; color: #64748b; letter-spacing: 0.5px;">ÖDEME</span>
             <div id="detail_status" style="margin-top: 4px;">-</div>
+          </div>
+
+          <div style="background: #f0fdf4; border: 1px solid #dcfce7; border-radius: 12px; padding: 12px 16px;">
+            <span style="font-size: 10px; font-weight: 800; color: #166534; letter-spacing: 0.5px;">ÖDENEN</span>
+            <div id="detail_paid" style="font-weight: 800; font-size: 14px; margin-top: 4px; color: #16a34a;">-</div>
+          </div>
+
+          <div style="background: #fff1f2; border: 1px solid #ffe4e6; border-radius: 12px; padding: 12px 16px;">
+            <span style="font-size: 10px; font-weight: 800; color: #be123c; letter-spacing: 0.5px;">KALAN</span>
+            <div id="detail_remaining" style="font-weight: 800; font-size: 14px; margin-top: 4px; color: #e11d48;">-</div>
           </div>
         </div>
 
