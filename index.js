@@ -2,7 +2,13 @@ const express = require('express');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 const app = express();
-require('dotenv').config();
+try {
+  require('dotenv').config();
+} catch (err) {
+  // Railway gibi ortamlarda env panelden verildiği için dotenv zorunlu değildir.
+  if (err.code !== 'MODULE_NOT_FOUND') throw err;
+  console.warn('dotenv bulunamadı, ortam değişkenleri platformdan okunuyor.');
+}
 
 
 
