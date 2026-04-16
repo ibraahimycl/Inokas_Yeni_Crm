@@ -133,6 +133,15 @@ function openInvoiceModal() {
     document.getElementById('invoiceModal').style.display = 'flex';
 }
 
+
+
+
+
+
+
+
+
+
 // 2- EKRANI "GÜNCELLEME" İÇİN DOLDURARAK (KİLİTLİ OLARAK) AÇ
 function viewInvoice(id) {
     const inv = allInvoicesCache.find(i => i.id === id);
@@ -206,6 +215,17 @@ function viewInvoice(id) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 // XML Fatura kilidini zorla açar (Manuel Düzenleme Modu)
 function unlockInvoiceForm() {
     const lockedInputs = document.querySelectorAll('.locked-input');
@@ -229,6 +249,15 @@ function unlockInvoiceForm() {
     // Uyarı kutusunu (Kilidi kır butonunun olduğu sarı yeri) gizle
     document.getElementById('unlockWarningBox').style.display = 'none';
 }
+
+
+
+
+
+
+
+
+
 
 
 
@@ -261,6 +290,17 @@ function closeInvoiceModal() {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
 // --- XML PARSING ENGINE ---
 function handleFileUpload(e) {
     const file = e.target.files[0]; // keep the firs file user uploaded
@@ -274,6 +314,17 @@ function handleFileUpload(e) {
     };
     reader.readAsText(file);
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -301,6 +352,18 @@ function getVal(parent, tagName) {
 // This helper function extracts specific data from the XML tree and cleans it.
 // The extracted values are used to fill the HTML form fields on the screen temporarily for user to check them out.
 // It ensures that even if the XML structure varies, the requested information is found safely.
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -500,6 +563,21 @@ function parseUBL(xml) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // --- HAFIZALI (CACHE) TABLO YENİLEME İŞLEMLERİ ---
 
 let allInvoicesCache = null; // Ana Depomuz (Veriler burada tutulacak)
@@ -511,6 +589,19 @@ function normalizeCurrencyCode(code) {
     if (val === 'TL') return 'TRY';
     return val;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function readInvoicesFromSession() {
     try {
@@ -536,6 +627,22 @@ function readInvoicesFromSession() {
     }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function writeInvoicesToSession(invoices) {
     try {
         const payload = {
@@ -547,6 +654,21 @@ function writeInvoicesToSession(invoices) {
         console.warn('Session cache yazılamadı:', e);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // 1. Ana Garson (SADECE sayfa açıldığında veya "Yenile"ye basıldığında çalışır)
 async function refreshData(forceFetch = false) {
@@ -579,6 +701,16 @@ async function refreshData(forceFetch = false) {
         tableBody.innerHTML = '<tr><td colspan="11" class="text-center text-danger">Veriler yüklenirken hata oluştu!</td></tr>';
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -656,6 +788,15 @@ function renderCurrentView() {
 
 
 
+
+
+
+
+
+
+
+
+
 // 🌟 ÖZET KARTLARI MATEMATİK MOTORU
 function updateSummaryCards(invoices) {
     // Sekmeye göre başlıklar değişir, hesap motoru aynıdır.
@@ -714,6 +855,15 @@ function updateSummaryCards(invoices) {
     document.getElementById('stat-paid').innerText = formatTL(totalPaid);
     document.getElementById('stat-paid-count').innerText = `${paidCount} Fatura`;
 }
+
+
+
+
+
+
+
+
+
 
 
 
@@ -825,11 +975,26 @@ function renderInvoiceTable(invoices) {
 
 
 
+
+
+
+
+
+
+
+
 // --- SADECE OKUNABİLİR ŞIK FATURA DETAY PANELİ KONTROLLERİ ---
 
 function closeInvoiceDetailModal() {
     document.getElementById('invoiceDetailModal').style.display = 'none';
 }
+
+
+
+
+
+
+
 
 
 
@@ -933,6 +1098,11 @@ function viewInvoiceDetails(id) {
 
 
 
+
+
+
+
+
 async function saveInvoiceToDatabase(e) {
     e.preventDefault();
     if (isInvoiceSaveInFlight) {
@@ -969,21 +1139,57 @@ async function saveInvoiceToDatabase(e) {
         }
     }
 
+    // Ürün satırlarını ekrandan topla (Güncelleme + Yeni Kayıt akışında ortak kullanılacak)
+    const lineRows = document.querySelectorAll('#lineItemsBody tr');
+    const itemsFromForm = Array.from(lineRows).map((row) => {
+        const cells = row.querySelectorAll('td');
+        const productName = row.querySelector('input[type="text"]')?.value?.trim() || cells[0]?.innerText?.trim() || 'İsimsiz Ürün';
+        const qtyInput = row.querySelector('input[type="number"]');
+        const numberInputs = row.querySelectorAll('input[type="number"]');
+        const qty = parseFloat(qtyInput?.value || cells[1]?.innerText || 0) || 0;
+        const unitPrice = parseFloat(numberInputs[1]?.value || cells[2]?.innerText || 0) || 0;
+        const lineTotal = parseFloat(numberInputs[2]?.value || cells[3]?.innerText || 0) || 0;
+        const taxRate = parseInt(row.querySelector('.tax-rate-val')?.value || cells[4]?.innerText || 0, 10) || 0;
+        const internalToggle = row.querySelector('.internal-toggle');
+        const isInternal = internalToggle ? !!internalToggle.checked : false;
+        return {
+            product_name: productName,
+            sku: '',
+            quantity: qty,
+            unit: 'ADET',
+            unit_price_cur: unitPrice,
+            tax_rate: taxRate,
+            total_price_cur: lineTotal,
+            is_internal: isInternal
+        };
+    }).filter(item => item.product_name && item.quantity > 0);
+
     // GÜNCELLEME MODU: Düzenleme ekranında XML zorunluluğu yok
     if (invoiceId) {
         const updatePayload = {
-            status: status,
-            paid_amount: paidAmount,
-            due_date: document.getElementById('f_due_date')?.value || null,
-            exchange_rate: parseFloat(document.getElementById('f_kur')?.value) || 1,
-            notes: document.getElementById('f_notes')?.value || '',
-            invoice_type: document.getElementById('f_type')?.value || 'Ticari',
-            invoice_no: document.getElementById('f_no')?.value || '',
-            invoice_date: document.getElementById('f_date')?.value || null,
-            total_amount_tl: totalAmount,
-            net_amount_tl: parseFloat(document.getElementById('f_net')?.value) || 0,
-            tax_amount_tl: parseFloat(document.getElementById('f_tax')?.value) || 0,
-            currency: document.getElementById('f_currency')?.value || 'TL'
+            invoice: {
+                status: status,
+                paid_amount: paidAmount,
+                due_date: document.getElementById('f_due_date')?.value || null,
+                exchange_rate: parseFloat(document.getElementById('f_kur')?.value) || 1,
+                notes: document.getElementById('f_notes')?.value || '',
+                invoice_type: document.getElementById('f_type')?.value || 'Ticari',
+                invoice_no: document.getElementById('f_no')?.value || '',
+                invoice_date: document.getElementById('f_date')?.value || null,
+                total_amount_tl: totalAmount,
+                net_amount_tl: parseFloat(document.getElementById('f_net')?.value) || 0,
+                tax_amount_tl: parseFloat(document.getElementById('f_tax')?.value) || 0,
+                currency: document.getElementById('f_currency')?.value || 'TL'
+            },
+            company: {
+                vkn_tckn: document.getElementById('f_vkn')?.value?.trim() || '',
+                name: document.getElementById('f_firma')?.value?.trim() || '',
+                phone: document.getElementById('f_phone')?.value?.trim() || '',
+                email: document.getElementById('f_email')?.value?.trim() || '',
+                website: document.getElementById('f_website')?.value?.trim() || '',
+                address: document.getElementById('f_address')?.value?.trim() || ''
+            },
+            items: itemsFromForm
         };
 
         try {
@@ -1021,7 +1227,6 @@ async function saveInvoiceToDatabase(e) {
     }
 
     // 1. Hazırlık: UI verilerini (checkboxlar vs) topla
-    const lineRows = document.querySelectorAll('#lineItemsBody tr');
     const itemsToSave = currentParsedData.items.map((item, index) => {
         const row = lineRows[index];
         return {
@@ -1090,6 +1295,14 @@ async function saveInvoiceToDatabase(e) {
 
 
 
+
+
+
+
+
+
+
+
 // İlgili faturayı backend üzerinden tamamen siliyoruz
 async function deleteInvoice(id) {
     if (!confirm("⚠️ Bu faturayı ve içerisindeki tüm ürünleri silmek istediğinize emin misiniz?\nBu işlem geri alınamaz!")) return;
@@ -1106,6 +1319,14 @@ async function deleteInvoice(id) {
         alert("Fatura silinirken bir ağ hatası oluştu.");
     }
 }
+
+
+
+
+
+
+
+
 
 
 
@@ -1163,6 +1384,16 @@ async function fetchTCMBKur() {
         kurInput.placeholder = "0.0000";
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 function addLineItem(desc = '', qty = 1, price = 0, total = 0, taxRate = 20) {
     const row = document.createElement('tr');

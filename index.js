@@ -300,45 +300,25 @@ app.get('/api/invoices', async (req, res) => {
 app.put('/api/invoices/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const { invoice, company, items } = req.body || {};
+    const payloadInvoice = invoice && typeof invoice === 'object' ? invoice : {};
+    const payloadCompany = company && typeof company === 'object' ? company : {};
+    const payloadItems = Array.isArray(items) ? items : [];
 
-    // Frontend'den gelen her şeyi alıyoruz
-    const {
-      status, paid_amount, due_date, exchange_rate, notes, invoice_type, // Serbest Alanlar
-      invoice_no, invoice_date, total_amount_tl, net_amount_tl, tax_amount_tl, currency // Normalde Kilitli Alanlar
-    } = req.body;
-
-    // Gönderilen (Boş olmayan) alanları dinamik olarak Supabase paketine ekliyoruz
-    const updatePayload = {};
-
-    if (status !== undefined) updatePayload.status = status;
-    if (paid_amount !== undefined) updatePayload.paid_amount = paid_amount;
-    if (due_date !== undefined) updatePayload.due_date = due_date;
-    if (exchange_rate !== undefined) updatePayload.exchange_rate = exchange_rate;
-    if (notes !== undefined) updatePayload.notes = notes;
-    if (invoice_type !== undefined) updatePayload.invoice_type = invoice_type;
-
-    // Kilitli alanlar da gelirse onları da faturaya işletiyoruz
-    if (invoice_no !== undefined) updatePayload.invoice_no = invoice_no;
-    if (invoice_date !== undefined) updatePayload.invoice_date = invoice_date;
-    if (total_amount_tl !== undefined) updatePayload.total_amount_tl = total_amount_tl;
-    if (net_amount_tl !== undefined) updatePayload.net_amount_tl = net_amount_tl;
-    if (tax_amount_tl !== undefined) updatePayload.tax_amount_tl = tax_amount_tl;
-    if (currency !== undefined) updatePayload.currency = currency;
-
-    // Supabase'e dinamik paketi yolluyoruz
-    const { data, error } = await supabase
-      .from('invoices')
-      .update(updatePayload)
-      .eq('id', id)
-      .select();
+    const { data, error } = await supabase.rpc('update_invoice_transaction', {
+      p_invoice_id: id,
+      p_invoice_data: payloadInvoice,
+      p_company_data: payloadCompany,
+      p_items_data: payloadItems
+    });
 
     if (error) throw error;
 
-    res.json({ message: "Fatura başarıyla güncellendi", data: data });
+    res.json({ message: "Fatura başarıyla güncellendi", data });
 
   } catch (error) {
     console.error("PUT /api/invoices/:id hatası:", error);
-    res.status(500).json({ error: "Sunucu hatası oluştu" });
+    res.status(500).json({ error: error.message || "Sunucu hatası oluştu", errorCode: error.code });
   }
 });
 
