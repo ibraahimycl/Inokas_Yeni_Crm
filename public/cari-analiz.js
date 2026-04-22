@@ -20,15 +20,6 @@ function setupAnalysisUi() {
   searchInput?.addEventListener('input', renderCompanyCards);
   document.getElementById('btnCloseCompanyModal')?.addEventListener('click', closeCompanyModal);
 
-  // Yenile butonu: cache'i temizleyip sunucudan taze veri çeker, sayfayı yeniden render eder
-  document.getElementById('btnRefreshAnaliz')?.addEventListener('click', async () => {
-    const btn = document.getElementById('btnRefreshAnaliz');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Yükleniyor...'; }
-    sessionStorage.removeItem(CARI_ANALIZ_CACHE_KEY);
-    await fetchInvoicesForAnalysis(true);
-    renderCompanyCards();
-    if (btn) { btn.disabled = false; btn.innerHTML = '🔄 Yenile'; }
-  });
   document.getElementById('companyDetailModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'companyDetailModal') closeCompanyModal();
   });

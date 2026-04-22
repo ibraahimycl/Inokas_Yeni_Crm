@@ -9,7 +9,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function setupStockUi() {
   document.getElementById('stockSearch')?.addEventListener('input', renderStocksTable);
-  document.getElementById('btnRefreshStocks')?.addEventListener('click', () => refreshStocks(true));
 }
 
 async function refreshStocks(force = false) {

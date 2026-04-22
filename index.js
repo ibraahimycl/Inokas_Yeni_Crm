@@ -25,14 +25,21 @@ const supabase = createClient(
 
 /** Ana sayfa: static’ten ÖNCE — aksi halde GET / hiç buraya düşmez, toplu XML için VKN enjekte edilemez */
 function getFaturalarIndexHtml() {
-  const htmlPath = path.join(__dirname, 'public', 'index.html');
-  let html = fs.readFileSync(htmlPath, 'utf8');
-  const vkn = (process.env.INOKAS_VKN || '').trim();
-  const inject = `<script>window.__INOKAS_VKN__=${JSON.stringify(vkn)};</script>`;
+  const htmlPath = path.join(__dirname, 'public', 'index.html'); // 1) public klasöründeki index.html dosyasının tam yolunu üretir (şimdi bu dosyayı okuyacağız)
+  
+  let html = fs.readFileSync(htmlPath, 'utf8'); // 2) index.html içeriğini düz metin olarak RAM'e alır (response olarak bunu döneceğiz)
+  
+  const vkn = (process.env.INOKAS_VKN || '').trim(); // 3) Ortam değişkeninden INOKAS_VKN değerini alır; yoksa boş string kullanır
+  
+  const inject = `<script>window.__INOKAS_VKN__=${JSON.stringify(vkn)};</script>`; // 4) Tarayıcıya enjekte edilecek küçük script'i hazırlar: window.__INOKAS_VKN__
+  
+  // 5) Güvenli kontrol: </head> etiketi varsa script'i head kapanmadan hemen önce ekler
   if (html.includes('</head>')) {
-    html = html.replace('</head>', `${inject}\n</head>`);
+    
+    html = html.replace('</head>', `${inject}\n</head>`); // 6) Script enjekte edilmiş yeni HTML metnini üretir (frontend bu global değişkene buradan erişir)
   }
-  return html;
+ 
+  return html; // 7) Son HTML'i route'a geri döner; app.get('/') bunu browser'a gönderir
 }
 
 app.get('/', (req, res) => {

@@ -78,23 +78,102 @@ body {
 .content-card { background: var(--card); border-radius: 16px; border: 1px solid var(--border); overflow: hidden; }
 .toolbar { padding: 1.5rem; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); background: #fafafa; }
 .search-group { display: flex; gap: 10px; }
-.toolbar input, .toolbar select { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; outline: none; }
+.toolbar input, .toolbar select { padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; outline: none; font-size: 14px; }
 
 /* Filtre kutuları uzun option metnine göre büyümesin */
 .search-group select {
-  width: 140px;
-  min-width: 140px;
-  max-width: 140px;
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Firma seçimi diğerlerinden biraz daha geniş ama sabit */
-#filterCompany {
-  width: 220px;
-  min-width: 220px;
-  max-width: 220px;
+/* Custom firma dropdown wrapper */
+.company-dropdown-wrap {
+  position: relative;
+  width: 240px;
+  min-width: 240px;
+}
+
+.company-dropdown-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.company-dropdown-btn:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+.company-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 999;
+  width: 300px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  padding: 8px;
+}
+
+.company-dropdown-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  font-size: 13px;
+  outline: none;
+  margin-bottom: 6px;
+  color: #374151;
+}
+
+.company-dropdown-search:focus { border-color: var(--primary); }
+
+.company-dropdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 270px; /* ~10 item */
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.company-dropdown-list li {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #374151;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.company-dropdown-list li:hover { background: #f1f5f9; }
+.company-dropdown-list li.selected { background: #e0f2fe; color: #0369a1; font-weight: 600; }
+.company-dropdown-list li.all-option { color: #64748b; font-style: italic; }
+
+/* Arama inputu */
+#mainSearch {
+  width: 260px;
+  min-width: 260px;
 }
 
 .modern-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
@@ -105,7 +184,10 @@ body {
 .modern-table tr:hover { background: #f8fafc; }
 
 /* --- BUTTONS --- */
-.btn { border: none; padding: 10px 20px; border-radius: 8px; font-weight: 700; cursor: pointer; transition: 0.2s; }
+.btn { border: none; padding: 10px 20px; border-radius: 8px; font-weight: 700; cursor: pointer; transition: 0.2s; white-space: nowrap; }
+
+/* Tümünü Göster/Gizle genişliği sabit — metin değişince kayma olmasın */
+#btnToggleShowAll { width: 140px; min-width: 140px; max-width: 140px; text-align: center; overflow: hidden; }
 .btn-primary { background: var(--primary); color: white; }
 .btn-primary:hover { background: #1d4ed8; }
 .btn-secondary { background: #f1f5f9; color: var(--text-main); }

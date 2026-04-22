@@ -1,6 +1,6 @@
 // Filtrelerin Sekmelere Özel Hafızası (Her sekme kendi seçimini yazar)
 // index.html içindeki script ?v= ile aynı tut (deploy sonrası hangi bundle çalışıyor görmek için)
-const FATURALAR_BUILD = '20260420-recalc-fix';
+const FATURALAR_BUILD = '20260422-per-tab-showall';
 console.info('[faturalar] bundle', FATURALAR_BUILD);
 
 const filterMemory = {
@@ -40,6 +40,15 @@ function parseProductCodeForSku(itemNode) {
 let currentParsedData = null;
 let currentView = 'gelen';
 let isInvoiceSaveInFlight = false;
+// Her sekmenin kendi "tümünü göster" ve "etkileşim" durumu var
+const showAllState    = { gelen: false, giden: false };
+const interactedState = { gelen: false, giden: false };
+
+// Kısayollar — currentView her zaman 'gelen' veya 'giden'
+function isShowAll()     { return showAllState[currentView]; }
+function hasInteracted() { return interactedState[currentView]; }
+function setShowAll(v)   { showAllState[currentView] = v; }
+function setInteracted(v){ interactedState[currentView] = v; }
 // We use `let` for state values because they can change during runtime but const is not.
 // `currentParsedData` stores parsed XML data temporarily in RAM because ->
 // The user may adjust fields in the UI before saving.
@@ -53,6 +62,7 @@ let isInvoiceSaveInFlight = false;
 // Then initialize all click/change/drop listeners in one place.
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
+    restoreFilterState(); // Sayfa değişince filtreler silinmesin
     refreshData(true);
 
     // Get the invoice form from the page.
@@ -60,6 +70,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (invoiceForm) { // 'invoiceForm' is the id of the form in the index.HTML page.
         invoiceForm.addEventListener('submit', saveInvoiceToDatabase); // submit event is triggered when the form is submitted. and saveInvoiceToDatabase is the function we created.
     } // addEventListener is a method and it said -> "if this event happens, then do this".
+    
+    // Filtre değişince: showAll kapat, etkileşim flag'ini aç, kaydet ve yeniden render
+    const onFilterChange = () => {
+        setInteracted(true);
+        if (isShowAll()) {
+            setShowAll(false);
+            const btn = document.getElementById('btnToggleShowAll');
+            if (btn) btn.innerText = 'Tümünü Göster';
+        }
+        saveFilterState();
+        renderCurrentView();
+    };
+
+    // filterCompany artık hidden input, değişikliği _setCompanyValue içinde yönetiliyor
+    document.getElementById('filterYear')?.addEventListener('change', onFilterChange);
+    document.getElementById('filterMonth')?.addEventListener('change', onFilterChange);
+    document.getElementById('filterStatus')?.addEventListener('change', onFilterChange);
+    document.getElementById('filterCurrency')?.addEventListener('change', onFilterChange);
+    document.getElementById('mainSearch')?.addEventListener('input', onFilterChange);
 });
 
 
@@ -970,8 +999,62 @@ async function executeBulkUpload() {
 // --- HAFIZALI (CACHE) TABLO YENİLEME İŞLEMLERİ ---
 
 let allInvoicesCache = null; // Ana Depomuz (Veriler burada tutulacak)
-const INVOICE_CACHE_KEY = 'inokas_invoices_cache_v2';
+const INVOICE_CACHE_KEY    = 'inokas_invoices_cache_v2';
+const FILTER_STATE_KEY     = 'inokas_filter_state_v1';
 const INVOICE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 dakika
+
+// Filtre durumunu sessionStorage'a yaz (aktif sekme dahil tab state'leri)
+function saveFilterState() {
+    try {
+        const state = {
+            company:      document.getElementById('filterCompany')?.value || '',
+            year:         document.getElementById('filterYear')?.value || '',
+            month:        document.getElementById('filterMonth')?.value || '',
+            status:       document.getElementById('filterStatus')?.value || '',
+            currency:     document.getElementById('filterCurrency')?.value || '',
+            search:       document.getElementById('mainSearch')?.value || '',
+            companyLabel: document.getElementById('companyDropdownLabel')?.textContent || 'Firmalar',
+            showAllGelen:     showAllState.gelen,
+            showAllGiden:     showAllState.giden,
+            interactedGelen:  interactedState.gelen,
+            interactedGiden:  interactedState.giden,
+            currentView:      currentView,
+        };
+        sessionStorage.setItem(FILTER_STATE_KEY, JSON.stringify(state));
+    } catch(e) { /* sessizce geç */ }
+}
+
+// Filtre durumunu sessionStorage'dan oku ve uygula
+function restoreFilterState() {
+    try {
+        const raw = sessionStorage.getItem(FILTER_STATE_KEY);
+        if (!raw) return;
+        const s = JSON.parse(raw);
+
+        if (s.year)     { const el = document.getElementById('filterYear');     if (el) el.value = s.year; }
+        if (s.month)    { const el = document.getElementById('filterMonth');    if (el) el.value = s.month; }
+        if (s.status)   { const el = document.getElementById('filterStatus');   if (el) el.value = s.status; }
+        if (s.currency) { const el = document.getElementById('filterCurrency'); if (el) el.value = s.currency; }
+        if (s.search)   { const el = document.getElementById('mainSearch');     if (el) el.value = s.search; }
+
+        if (s.company !== undefined) {
+            const hidden = document.getElementById('filterCompany');
+            const label  = document.getElementById('companyDropdownLabel');
+            if (hidden) hidden.value = s.company;
+            if (label)  label.textContent = s.companyLabel || (s.company || 'Firmalar');
+        }
+
+        // Her sekmenin kendi state'ini geri yükle
+        showAllState.gelen    = !!s.showAllGelen;
+        showAllState.giden    = !!s.showAllGiden;
+        interactedState.gelen = !!s.interactedGelen;
+        interactedState.giden = !!s.interactedGiden;
+
+        // Buton metnini aktif sekmeye göre güncelle
+        const btn = document.getElementById('btnToggleShowAll');
+        if (btn) btn.innerText = isShowAll() ? 'Tümünü Gizle' : 'Tümünü Göster';
+    } catch(e) { /* sessizce geç */ }
+}
 
 function normalizeCurrencyCode(code) {
     const val = String(code || '').trim().toUpperCase();
@@ -1194,7 +1277,7 @@ function writeInvoicesToSession(invoices) {
 
 
 
-// 1. Ana Garson (SADECE sayfa açıldığında veya "Yenile"ye basıldığında çalışır)
+// 1.(SADECE sayfa açıldığında veya "Yenile"ye basıldığında çalışır)
 async function refreshData(forceFetch = false) {
     const tableBody = document.getElementById('invoiceTableBody');
     if (!forceFetch) {
@@ -1252,29 +1335,43 @@ function renderCurrentView() {
     // B. Önce o sekmeye ait (Gelen/Giden) tüm faturaları süz
     let filteredInvoices = allInvoicesCache.filter(inv => inv.direction === directionFilter);
 
-    // 🌟 EKRANDAKİ AÇILIR MENÜYÜ DOLDUR 
-    // Sekmedeki firmalara göre "Şirket Kutumuzun" içini tazeleyelim
+    // B2. Firma dropdown'ını her zaman doldur (erken return'den önce, aksi hâlde liste boş kalır)
     populateCompanyFilter(filteredInvoices);
 
-    // C. Kullanıcının Seçtiği Filtreleri Yakalayalım
+    // C. Kullanıcı bu sekmede henüz bir şeye dokunmadıysa → boş tablo + gri placeholder barlar
+    if (!hasInteracted()) {
+        renderInvoiceTable([]);
+        updateSummaryCards([]);
+        return;
+    }
+
+    // D. Bu sekme için "Tümünü Göster" aktifse → filtresiz hepsini göster
+    if (isShowAll()) {
+        renderInvoiceTable(filteredInvoices);
+        updateSummaryCards(filteredInvoices);
+        return;
+    }
+
+    // E. Kullanıcı etkileşim yaptı ama showAll kapalı → filtreleri oku ve uygula
     const companySelected = document.getElementById('filterCompany').value;
+    const yearSelected = document.getElementById('filterYear').value;
+    const monthSelected = document.getElementById('filterMonth').value;
+    const statusSelected = document.getElementById('filterStatus').value;
     const currencySelected = normalizeCurrencyCode(document.getElementById('filterCurrency').value);
-    const searchText = document.getElementById('mainSearch').value.toLocaleLowerCase('tr-TR');
+    const searchText = document.getElementById('mainSearch').value;
 
-    // Seçimlere göre faturaları bir kez daha elekten geçiriyoruz
+    // Arama metnini normalize et
+    const searchTextLower = searchText.toLocaleLowerCase('tr-TR');
+
+    // G. Seçimlere göre faturaları filtrele
     filteredInvoices = filteredInvoices.filter(inv => {
-        // Yeni Filtreyi HTML'den Çekelim
-        const yearSelected = document.getElementById('filterYear').value;
-        const monthSelected = document.getElementById('filterMonth').value;
-        const statusSelected = document.getElementById('filterStatus').value;
-
         // 1- Mevcut Şirket & Döviz & Yazı Filtreleri
         const matchCompany = !companySelected || inv.companies?.name === companySelected;
         const invoiceCurrency = normalizeCurrencyCode(inv.currency);
         const matchCurrency = !currencySelected || invoiceCurrency === currencySelected;
-        const matchSearch = !searchText ||
-            (inv.companies?.name && inv.companies.name.toLocaleLowerCase('tr-TR').includes(searchText)) ||
-            (inv.invoice_no && inv.invoice_no.toLocaleLowerCase('tr-TR').includes(searchText));
+        const matchSearch = !searchTextLower ||
+            (inv.companies?.name && inv.companies.name.toLocaleLowerCase('tr-TR').includes(searchTextLower)) ||
+            (inv.invoice_no && inv.invoice_no.toLocaleLowerCase('tr-TR').includes(searchTextLower));
 
         // 2- Ödeme Durumu Filtresi
         const valStatus = (inv.status || 'unpaid').toLowerCase();
@@ -1299,8 +1396,38 @@ function renderCurrentView() {
         return matchCompany && matchCurrency && matchSearch && matchStatus && matchYear && matchMonth;
     });
 
-    // En son sağ kalan (süzülmüş) faturaları masaya (ekrana) bas
+    // H. Filtrelenmiş faturaları ekrana bas
     renderInvoiceTable(filteredInvoices);
+    updateSummaryCards(filteredInvoices);
+}
+
+// Tümünü Göster/Gizle toggle fonksiyonu
+// Tümünü Göster/Gizle toggle — sadece aktif sekmeyi etkiler
+function toggleShowAll() {
+    setShowAll(!isShowAll());
+    setInteracted(true);
+
+    const btn = document.getElementById('btnToggleShowAll');
+
+    if (isShowAll()) {
+        // Açıldı → filtreleri temizle
+        document.getElementById('filterCompany').value = '';
+        document.getElementById('filterYear').value = '';
+        document.getElementById('filterMonth').value = '';
+        document.getElementById('filterStatus').value = '';
+        document.getElementById('filterCurrency').value = '';
+        document.getElementById('mainSearch').value = '';
+        const lbl = document.getElementById('companyDropdownLabel');
+        if (lbl) lbl.textContent = 'Firmalar';
+        btn.innerText = 'Tümünü Gizle';
+    } else {
+        // Kapatıldı → bu sekme başlangıç durumuna dönsün
+        setInteracted(false);
+        btn.innerText = 'Tümünü Göster';
+    }
+
+    saveFilterState();
+    renderCurrentView();
 }
 
 
@@ -1346,20 +1473,18 @@ function updateSummaryCards(invoices) {
 
     container.innerHTML = ''; // önceki barları temizle
 
-    // Görüntüleme sırası: TRY önce, ardından alfabetik dövizler
-    const preferredOrder = ['TRY', 'USD', 'EUR'];
-    const allIsos = [...new Set([...preferredOrder, ...Object.keys(byCurrency)])];
-    const visibleIsos = allIsos.filter(iso => byCurrency[iso] && byCurrency[iso].count > 0);
+    // TRY ve USD her zaman ekranda sabit durur
+    // Veri varsa renkli, yoksa gri placeholder
+    const preferredOrder = ['TRY', 'USD'];
 
-    if (visibleIsos.length === 0) {
-        container.innerHTML = '<p style="color:#94a3b8; font-size:13px; margin:0;">Gösterilecek fatura yok.</p>';
-        return;
-    }
-
-    visibleIsos.forEach(iso => {
-        const { payable, paid } = byCurrency[iso];
-        const remaining = Math.max(payable - paid, 0);
-        container.appendChild(buildProgressBar(iso, paid, remaining, payable, isIncoming));
+    preferredOrder.forEach(iso => {
+        const data = byCurrency[iso];
+        if (data && data.count > 0) {
+            const remaining = Math.max(data.payable - data.paid, 0);
+            container.appendChild(buildProgressBar(iso, data.paid, remaining, data.payable, isIncoming));
+        } else {
+            container.appendChild(buildPlaceholderBar(iso, isIncoming));
+        }
     });
 }
 
@@ -1371,6 +1496,46 @@ function _fmtAmount(num, iso) {
     const n = Number(num) || 0;
     if (iso === 'TRY') return n.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
     return `${n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${_isoLabel(iso)}`;
+}
+
+// Filtre yokken gösterilen gri boş placeholder bar
+function buildPlaceholderBar(iso, isIncoming) {
+    const label     = _isoLabel(iso);
+    const titlePaid = isIncoming ? 'Ödenen' : 'Tahsil Edilen';
+    const titleRem  = isIncoming ? 'Kalan Borç' : 'Kalan Alacak';
+    const zeroFmt   = _fmtAmount(0, iso);
+
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = `
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 16px 20px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        opacity: 0.55;
+    `;
+
+    const heading = document.createElement('div');
+    heading.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;';
+    heading.innerHTML = `
+        <span style="font-size:13px; font-weight:800; color:#64748b; letter-spacing:0.5px;">${label}</span>
+        <span style="font-size:12px; color:#94a3b8;">${isIncoming ? 'Toplam' : 'Toplam Alacak'}: ${zeroFmt}</span>
+    `;
+    wrapper.appendChild(heading);
+
+    const barWrap = document.createElement('div');
+    barWrap.style.cssText = 'height:28px; border-radius:8px; background:#e2e8f0;';
+    wrapper.appendChild(barWrap);
+
+    const labels = document.createElement('div');
+    labels.style.cssText = 'display:flex; justify-content:space-between; margin-top:10px;';
+    labels.innerHTML = `
+        <span style="font-size:13px; font-weight:700; color:#94a3b8;">✓ ${titlePaid}: ${zeroFmt}</span>
+        <span style="font-size:13px; font-weight:700; color:#94a3b8;">✕ ${titleRem}: ${zeroFmt}</span>
+    `;
+    wrapper.appendChild(labels);
+
+    return wrapper;
 }
 
 // Tek bir progress bar HTML elementi oluşturur ve döndürür
@@ -1477,31 +1642,124 @@ function buildProgressBar(iso, paid, remaining, total, isIncoming) {
 
 
 
-// 🌟 ŞİRKET FİLTRESİNİ DOLDURAN MOTOR
+// ─── Custom Firma Dropdown ────────────────────────────────────────────────────
+
+let _companyList = []; // Tüm firma isimleri (alfabetik)
+
+// Firma listesini faturalardan derle ve dropdown'ı güncelle
 function populateCompanyFilter(invoices) {
-    const filterSelect = document.getElementById('filterCompany');
+    const hidden = document.getElementById('filterCompany');
+    const memoryVal = hidden ? hidden.getAttribute('data-memory') : null;
+    const currentValue = memoryVal !== null ? memoryVal : (hidden ? hidden.value : '');
+    if (hidden) hidden.removeAttribute('data-memory');
 
-    // Kutudaki mevcut değeri mi okuyalım, yoksa az önce sekme değiştirirken cebimize koyduğumuz eski hafızayı mı?
-    const memoryVal = filterSelect.getAttribute('data-memory');
-    const currentValue = memoryVal !== null ? memoryVal : filterSelect.value;
-    filterSelect.removeAttribute('data-memory'); // İşini bitirdi, sil gitsin
+    // Benzersiz firma isimlerini alfabetik sırala
+    _companyList = [...new Set(invoices.map(inv => inv.companies?.name).filter(Boolean))].sort();
 
-    // Önce kutunun içini "Tüm Firmalar" seçeneği hariç temizliyoruz
-    filterSelect.innerHTML = '<option value="">Tüm Firmalar</option>';
+    // Seçili değeri hidden input'a geri koy — _setCompanyValue çağırmıyoruz,
+    // çünkü o renderCurrentView'ı tetikler ve sonsuz döngüye girer
+    if (hidden && currentValue !== undefined) hidden.value = currentValue;
+    const lbl = document.getElementById('companyDropdownLabel');
+    if (lbl) lbl.textContent = currentValue || 'Firmalar';
+    const dropBtn = document.getElementById('companyDropdownBtn');
+    if (dropBtn) dropBtn.style.color = currentValue ? '#0f172a' : '#374151';
 
-    // Elimizdeki faturalardan sadece benzersiz (kopya olmayan) firma isimlerini ayıklıyoruz
-    const uniqueCompanies = [...new Set(invoices.map(inv => inv.companies?.name).filter(Boolean))];
+    // Listeyi çiz (mevcut seçimi vurgula)
+    _renderCompanyList('');
+}
 
-    // Ayıkladığımız isimleri alfabetik dizip, filtreleme kutusuna <option> olarak basıyoruz
-    uniqueCompanies.sort().forEach(companyName => {
-        const option = document.createElement('option');
-        option.value = companyName;
-        option.textContent = companyName;
-        filterSelect.appendChild(option);
+// Arama kutusuna yazılınca listeyi filtrele
+function filterCompanyDropdown() {
+    const q = (document.getElementById('companyDropdownSearch')?.value || '').toLocaleLowerCase('tr-TR');
+    _renderCompanyList(q);
+}
+
+// Listeyi çizen iç fonksiyon
+function _renderCompanyList(query) {
+    const list = document.getElementById('companyDropdownList');
+    if (!list) return;
+
+    const currentVal = document.getElementById('filterCompany')?.value || '';
+    // Herhangi bir kelimenin BAŞIYLA eşleşiyorsa getir (ortada geçiyorsa getirme)
+    const filtered = query
+        ? _companyList.filter(n =>
+            n.toLocaleLowerCase('tr-TR')
+             .split(/\s+/)
+             .some(word => word.startsWith(query))
+          )
+        : _companyList;
+
+    list.innerHTML = '';
+
+    // "Tüm Firmalar" seçeneği
+    const allLi = document.createElement('li');
+    allLi.textContent = 'Tüm Firmalar';
+    allLi.className = 'all-option' + (currentVal === '' ? ' selected' : '');
+    allLi.onclick = () => _setCompanyValue('');
+    list.appendChild(allLi);
+
+    filtered.forEach(name => {
+        const li = document.createElement('li');
+        li.textContent = name;
+        li.title = name;
+        if (name === currentVal) li.classList.add('selected');
+        li.onclick = () => _setCompanyValue(name);
+        list.appendChild(li);
     });
 
-    // Sayfa falan yenilenirse, kullanıcının o anki seçimi silinmesin diye (veya hafızadaki değer gelsin diye) geri koyuyoruz
-    filterSelect.value = currentValue;
+    if (filtered.length === 0 && query) {
+        const empty = document.createElement('li');
+        empty.textContent = 'Sonuç bulunamadı';
+        empty.style.cssText = 'color:#94a3b8; cursor:default; pointer-events:none;';
+        list.appendChild(empty);
+    }
+}
+
+// Değer seç, butonu güncelle, paneli kapat, filtre çalıştır
+function _setCompanyValue(val) {
+    const hidden = document.getElementById('filterCompany');
+    const btn    = document.getElementById('companyDropdownBtn');
+    const label  = document.getElementById('companyDropdownLabel');
+    if (hidden) hidden.value = val;
+    if (label)  label.textContent = val || 'Firmalar';
+    if (btn)    btn.style.color = val ? '#0f172a' : '#374151';
+    _closeCompanyDropdown();
+    setInteracted(true);
+    if (isShowAll()) {
+        setShowAll(false);
+        const tog = document.getElementById('btnToggleShowAll');
+        if (tog) tog.innerText = 'Tümünü Göster';
+    }
+    saveFilterState();
+    renderCurrentView();
+}
+
+// Dropdown aç/kapat
+function toggleCompanyDropdown() {
+    const panel  = document.getElementById('companyDropdownPanel');
+    const search = document.getElementById('companyDropdownSearch');
+    if (!panel) return;
+    const isOpen = panel.style.display !== 'none';
+    if (isOpen) {
+        _closeCompanyDropdown();
+    } else {
+        panel.style.display = 'block';
+        if (search) { search.value = ''; search.focus(); }
+        _renderCompanyList('');
+        // Dışarı tıklayınca kapat
+        setTimeout(() => document.addEventListener('click', _outsideCompanyClick), 0);
+    }
+}
+
+function _closeCompanyDropdown() {
+    const panel = document.getElementById('companyDropdownPanel');
+    if (panel) panel.style.display = 'none';
+    document.removeEventListener('click', _outsideCompanyClick);
+}
+
+function _outsideCompanyClick(e) {
+    const wrap = document.getElementById('companyDropdownWrap');
+    if (wrap && !wrap.contains(e.target)) _closeCompanyDropdown();
 }
 
 
@@ -1520,12 +1778,11 @@ function populateCompanyFilter(invoices) {
 
 // 2. Sunum: Gelen verileri HTML tablosuna dönüştürür
 function renderInvoiceTable(invoices) {
-    updateSummaryCards(invoices);
     const tableBody = document.getElementById('invoiceTableBody');
     tableBody.innerHTML = ''; // Önce tabloyu temizle
 
     if (invoices.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="11" class="text-center">Henüz fatura bulunmuyor.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="11" style="padding:40px; text-align:center; color:#94a3b8;">Lütfen faturaları görmek için arama yapın ya da filtreleme özelliklerini kullanın.</td></tr>';
         return;
     }
 
@@ -2403,6 +2660,10 @@ function switchView(view) {
     currentView = view;
     document.getElementById('tabGelen').classList.toggle('active', view === 'gelen');
     document.getElementById('tabGiden').classList.toggle('active', view === 'giden');
+
+    // Tümünü Göster/Gizle butonunu yeni sekmenin kendi durumuna güncelle
+    const _togBtn = document.getElementById('btnToggleShowAll');
+    if (_togBtn) _togBtn.innerText = isShowAll() ? 'Tümünü Gizle' : 'Tümünü Göster';
 
     // 3- YENİ SEKMENİN HAFIZASINI (BAVULUNU) EKRANA GERİ BOŞALT
     const memory = filterMemory[currentView];
