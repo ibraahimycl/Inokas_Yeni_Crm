@@ -1,109 +1,11 @@
 <!DOCTYPE html>
 <html lang="tr">
-
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cari Analiz — İnokas CRM</title>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
-    rel="stylesheet">
-  <link rel="stylesheet" href="cari-analiz.css">
-  <link rel="stylesheet" href="nav.css?v=nav-slide-4-gutter">
+  <meta http-equiv="refresh" content="0; url=/">
+  <title>Yönlendiriliyor...</title>
 </head>
-
 <body>
-  <nav class="topbar">
-    <div class="topbar-left">
-      <a href="/" class="brand">
-        <div class="brand-dot"></div>
-        İnokas <span>CRM</span>
-      </a>
-    </div>
-    <div class="topbar-right">
-      <div class="nav-cluster">
-        <span class="nav-pill" id="navPill" aria-hidden="true"></span>
-        <div class="nav-links-row" role="navigation" aria-label="Ana menü">
-          <button type="button" class="nav-link" data-nav-id="siparis">Siparişler</button>
-          <button type="button" class="nav-link" data-nav-id="teklif">Teklifler</button>
-          <a href="/" class="nav-link" data-nav-id="faturalar">Faturalar</a>
-          <a href="/stok.html" class="nav-link" data-nav-id="stok">Stok</a>
-          <button type="button" class="nav-link active" data-nav-id="cari">Cari Analiz</button>
-        </div>
-      </div>
-      <button type="button" class="nav-link nav-link--logout logout">Çıkış</button>
-    </div>
-  </nav>
-
-  <main class="main-container">
-    <header class="page-header">
-      <h1>Cari Analiz</h1>
-      <p>Tedarikçi ve müşteri bazında toplu finans özeti</p>
-    </header>
-
-    <div class="view-switcher">
-      <button class="tab-btn active" id="tabSuppliers">Tedarikçilerin Raporu</button>
-      <button class="tab-btn" id="tabCustomers">Müşterilerin Raporu</button>
-    </div>
-
-    <section class="content-card">
-      <div class="toolbar" style="display:flex; align-items:center; gap:8px;">
-        <input type="text" id="companySearch" placeholder="Firma ara...">
-      </div>
-      <div id="companyCardsGrid" class="cards-grid"></div>
-      <div id="analysisEmptyState" class="empty-state">Rapor verisi hazırlanıyor...</div>
-    </section>
-  </main>
-
-  <div id="companyDetailModal" class="modal-overlay">
-    <div class="modal-shell">
-      <div id="companyModalHeader" class="modal-header">
-        <div>
-          <h2 id="detailCompanyName">-</h2>
-          <p id="detailCompanySubtitle">-</p>
-        </div>
-        <button id="btnCloseCompanyModal" class="btn-close">✕ Kapat</button>
-      </div>
-
-      <div class="summary-grid">
-        <div class="summary-card">
-          <span>Toplam Fatura</span>
-          <strong id="detailInvoiceCount">0</strong>
-        </div>
-        <div class="summary-card">
-          <span>Toplam Hacim</span>
-          <strong id="detailTotalVolume">-</strong>
-        </div>
-        <div class="summary-card">
-          <span id="detailPendingLabel">Bekleyen</span>
-          <strong id="detailPending">-</strong>
-        </div>
-        <div class="summary-card">
-          <span id="detailPaidLabel">Ödenen</span>
-          <strong id="detailPaid">-</strong>
-        </div>
-      </div>
-
-      <h3 class="history-title">Fatura Geçmişi</h3>
-      <div class="history-table-wrap">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Fatura No</th>
-              <th>Tarih</th>
-              <th>Vade</th>
-              <th>Tutar</th>
-              <th>Durum</th>
-            </tr>
-          </thead>
-          <tbody id="detailInvoicesBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <script src="nav-pill.js?v=nav-slide-3-ease"></script>
-  <script src="cari-analiz.js"></script>
+  <script>window.location.replace('/');</script>
 </body>
-
 </html>

@@ -1,6 +1,6 @@
 // Filtrelerin Sekmelere Özel Hafızası (Her sekme kendi seçimini yazar)
 // index.html içindeki script ?v= ile aynı tut (deploy sonrası hangi bundle çalışıyor görmek için)
-const FATURALAR_BUILD = '20260422-per-tab-showall';
+const FATURALAR_BUILD = '20260423-po-integration';
 console.info('[faturalar] bundle', FATURALAR_BUILD);
 
 const filterMemory = {
@@ -62,8 +62,10 @@ function setInteracted(v){ interactedState[currentView] = v; }
 // Then initialize all click/change/drop listeners in one place.
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
+    bindModalOutsideClose();
     restoreFilterState(); // Sayfa değişince filtreler silinmesin
-    refreshData(true);
+    updateActionButtonsTheme();
+    refreshData(false);
 
     // Get the invoice form from the page.
     const invoiceForm = document.getElementById('invoiceForm'); // document is global object in JavaScript to present the HTML page.
@@ -90,6 +92,23 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('filterCurrency')?.addEventListener('change', onFilterChange);
     document.getElementById('mainSearch')?.addEventListener('input', onFilterChange);
 });
+
+function bindModalOutsideClose() {
+    const bindOne = (overlayId, closeFn) => {
+        const overlay = document.getElementById(overlayId);
+        if (!overlay) return;
+        if (overlay.dataset.outsideCloseBound === '1') return;
+
+        overlay.addEventListener('click', (e) => {
+            // Sadece arka plan (overlay) tıklandıysa kapat; modal içeriği tıklanınca kapatma
+            if (e.target === overlay) closeFn();
+        });
+        overlay.dataset.outsideCloseBound = '1';
+    };
+
+    bindOne('invoiceModal', closeInvoiceModal);
+    bindOne('invoiceDetailModal', closeInvoiceDetailModal);
+}
 
 
 
@@ -193,6 +212,10 @@ function viewInvoice(id) {
     document.getElementById('f_id').value = inv.id;
     document.getElementById('f_vkn').value = inv.companies?.vkn_tckn || '';
 
+    if (inv.companies?.vkn_tckn) {
+        fetchPendingOrdersForCompany(inv.companies.vkn_tckn);
+    }
+
     // Ekrana Verileri Dök
     document.getElementById('f_firma').value = inv.companies?.name || '';
     document.getElementById('f_no').value = inv.invoice_no || '';
@@ -242,7 +265,8 @@ function viewInvoice(id) {
                 item.unit_price_cur || 0, 
                 item.total_price_cur || 0, 
                 item.tax_rate || 20,
-                item.product_code || item.sku || ''
+                item.product_code || item.sku || '',
+                item.purchase_order_item_id || ''
             );
         });
     } else {
@@ -632,6 +656,9 @@ function applyParsedPayloadToForm(pack) {
     document.getElementById('f_due_date').value = inv.due_date || '';
     document.getElementById('f_firma').value = co.name || '';
     document.getElementById('f_vkn').value = co.vkn_tckn || '';
+
+    // VKN geldiği anda bekleyen siparişleri (backorder) kontrol et
+    fetchPendingOrdersForCompany(co.vkn_tckn);
     document.getElementById('f_tax_office').value = co.tax_office || '';
     document.getElementById('f_address').value = co.address || '';
     document.getElementById('f_phone').value = co.phone || '';
@@ -1000,8 +1027,10 @@ async function executeBulkUpload() {
 
 let allInvoicesCache = null; // Ana Depomuz (Veriler burada tutulacak)
 const INVOICE_CACHE_KEY    = 'inokas_invoices_cache_v2';
+const PAYMENT_CLOSURE_CACHE_KEY = 'inokas_payment_closure_cache_v1';
 const FILTER_STATE_KEY     = 'inokas_filter_state_v1';
 const INVOICE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 dakika
+let paymentClosureMap = {};
 
 // Filtre durumunu sessionStorage'a yaz (aktif sekme dahil tab state'leri)
 function saveFilterState() {
@@ -1262,6 +1291,36 @@ function writeInvoicesToSession(invoices) {
     }
 }
 
+function readPaymentClosureFromSession() {
+    try {
+        const raw = sessionStorage.getItem(PAYMENT_CLOSURE_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        const ts = Number(parsed?.timestamp) || 0;
+        const data = parsed?.data;
+        if (!data || typeof data !== 'object' || ts <= 0) return null;
+        if ((Date.now() - ts) > INVOICE_CACHE_TTL_MS) {
+            sessionStorage.removeItem(PAYMENT_CLOSURE_CACHE_KEY);
+            return null;
+        }
+        return data;
+    } catch (e) {
+        return null;
+    }
+}
+
+function writePaymentClosureToSession(closureMap) {
+    try {
+        const payload = {
+            timestamp: Date.now(),
+            data: closureMap && typeof closureMap === 'object' ? closureMap : {}
+        };
+        sessionStorage.setItem(PAYMENT_CLOSURE_CACHE_KEY, JSON.stringify(payload));
+    } catch (e) {
+        console.warn('Ödeme kapanış cache yazılamadı:', e);
+    }
+}
+
 
 
 
@@ -1282,8 +1341,10 @@ async function refreshData(forceFetch = false) {
     const tableBody = document.getElementById('invoiceTableBody');
     if (!forceFetch) {
         const cachedInvoices = readInvoicesFromSession();
+        const cachedClosure = readPaymentClosureFromSession();
         if (cachedInvoices !== null) {
             allInvoicesCache = cachedInvoices;
+            paymentClosureMap = cachedClosure || {};
             renderCurrentView();
             return;
         }
@@ -1293,12 +1354,17 @@ async function refreshData(forceFetch = false) {
 
     try {
         // Parametre vermiyoruz, tüm faturaları (Gelen+Giden) tek seferde istiyoruz
-        const response = await fetch(`/api/invoices`);
-        if (!response.ok) throw new Error("Veriler çekilemedi");
+        const [invRes, closureRes] = await Promise.all([
+            fetch(`/api/invoices`),
+            fetch('/api/payments/closure-summary')
+        ]);
+        if (!invRes.ok) throw new Error("Veriler çekilemedi");
 
         // Gelen tüm veriyi Kalıcı Hafızaya atıyoruz (İşte Cache burası!)
-        allInvoicesCache = await response.json();
+        allInvoicesCache = await invRes.json();
+        paymentClosureMap = closureRes.ok ? await closureRes.json() : {};
         writeInvoicesToSession(allInvoicesCache);
+        writePaymentClosureToSession(paymentClosureMap);
 
         // Hafızaya alındıktan sonra ekrana basma işini tetikle
         renderCurrentView();
@@ -1448,182 +1514,215 @@ function toggleShowAll() {
 
 
 
-// ─── ÖZET PROGRESS BARLARI ───────────────────────────────────────────────────
+// ─── KPI DASHBOARD ────────────────────────────────────────────────────────────
+function _isoLabel(iso) { return iso === 'TRY' ? 'TL' : iso; }
 
-// Fatura listesindeki tüm faturaları para birimine göre gruplar ve
-// her para birimi için ödenen / kalan ilerleme barını çizer.
+function _fmtAmount(num, iso) {
+    const n = Number(num) || 0;
+    if (iso === 'TRY') return n.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
+    if (iso === 'USD') return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    return `${n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${_isoLabel(iso)}`;
+}
+
+function _sumByCurrency(invoices) {
+    const out = { TRY: { payable: 0, paid: 0 }, USD: { payable: 0, paid: 0 } };
+    invoices.forEach(inv => {
+        const iso = invBaseCurrencyIso(inv);
+        if (!out[iso]) return;
+        const payable = invPayableAmountSrc(inv);
+        const paid = Math.min(invPaidAmountSrc(inv), payable);
+        out[iso].payable += payable;
+        out[iso].paid += paid;
+    });
+    return out;
+}
+
+function _daysBetween(dateStart, dateEnd) {
+    const s = new Date(dateStart);
+    const e = new Date(dateEnd);
+    if (!Number.isFinite(s.getTime()) || !Number.isFinite(e.getTime())) return null;
+    return Math.max(0, Math.round((e - s) / 86400000));
+}
+
+function _invPayableUsdEq(inv) {
+    // Öncelik: fatura USD ise doğrudan kaynak tutar.
+    const baseIso = invBaseCurrencyIso(inv);
+    const payableSrc = invPayableAmountSrc(inv);
+    if (baseIso === 'USD') return payableSrc;
+
+    // Diğer durumlarda (özellikle TRY), faturadaki kur üzerinden USD eşdeğer hesapla.
+    // calculation_rate: 1 USD = ? (fatura ekranındaki kur)
+    const payableTl = invPayableAmountTl(inv);
+    const rate = invCalculationRate(inv);
+    if (!Number.isFinite(rate) || rate <= 0) return 0;
+    return payableTl / rate;
+}
+
+function _avgClosureDays(invoices) {
+    let total = 0;
+    let count = 0;
+    invoices.forEach(inv => {
+        const st = String(inv.status || '').toLowerCase();
+        if (st !== 'paid') return;
+        const closure = paymentClosureMap?.[inv.id];
+        const lastDate = closure?.last_payment_date;
+        if (!lastDate) return;
+        const days = _daysBetween(inv.invoice_date, lastDate);
+        if (days === null) return;
+        total += days;
+        count += 1;
+    });
+    return { avg: count > 0 ? (total / count) : 0, count };
+}
+
+function _extractUniqueSkuCount(invoices) {
+    const sku = new Set();
+    invoices.forEach(inv => (inv.invoice_items || []).forEach(it => {
+        const code = String(it.product_code || it.sku || '').trim();
+        if (code) sku.add(code);
+    }));
+    return sku.size;
+}
+
+function _extractTotalQty(invoices) {
+    return invoices.reduce((acc, inv) => {
+        const rowQty = (inv.invoice_items || []).reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+        return acc + rowQty;
+    }, 0);
+}
+
+function _buildDirectionBaseForShare() {
+    const direction = currentView === 'gelen' ? 'INCOMING' : 'OUTGOING';
+    const yearSelected = document.getElementById('filterYear')?.value || '';
+    const monthSelected = document.getElementById('filterMonth')?.value || '';
+    const statusSelected = document.getElementById('filterStatus')?.value || '';
+    const currencySelected = normalizeCurrencyCode(document.getElementById('filterCurrency')?.value || '');
+    const searchText = (document.getElementById('mainSearch')?.value || '').toLocaleLowerCase('tr-TR');
+
+    return (allInvoicesCache || []).filter(inv => {
+        if (inv.direction !== direction) return false;
+        const invoiceCurrency = normalizeCurrencyCode(inv.currency);
+        if (currencySelected && invoiceCurrency !== currencySelected) return false;
+        const st = String(inv.status || 'unpaid').toLowerCase();
+        if (statusSelected && st !== statusSelected) return false;
+        if (searchText) {
+            const companyMatch = String(inv.companies?.name || '').toLocaleLowerCase('tr-TR').includes(searchText);
+            const noMatch = String(inv.invoice_no || '').toLocaleLowerCase('tr-TR').includes(searchText);
+            if (!companyMatch && !noMatch) return false;
+        }
+        if (yearSelected || monthSelected) {
+            const d = new Date(inv.invoice_date);
+            if (yearSelected && d.getFullYear().toString() !== yearSelected) return false;
+            if (monthSelected) {
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                if (m !== monthSelected) return false;
+            }
+        }
+        return true;
+    });
+}
+
 function updateSummaryCards(invoices) {
     const container = document.getElementById('summaryCardsContainer');
     if (!container) return;
 
     const isIncoming = currentView === 'gelen';
+    const totals = _sumByCurrency(invoices);
+    const totalQty = _extractTotalQty(invoices);
+    const uniqueSku = _extractUniqueSkuCount(invoices);
+    const closure = _avgClosureDays(invoices);
+    const closureAvgRounded = Math.round(closure.avg || 0);
 
-    // Para birimine göre toplamları hesapla: { TRY: {payable, paid, count}, USD: {...}, ... }
-    const byCurrency = {};
-    invoices.forEach(inv => {
-        const iso     = invBaseCurrencyIso(inv);    // "TRY" | "USD" | "EUR" ...
-        const payable = invPayableAmountSrc(inv);   // kaynak para biriminde toplam
-        const paid    = invPaidAmountSrc(inv);      // kaynak para biriminde ödenen
+    const baseForShare = _buildDirectionBaseForShare();
+    const selectedUsdEq = invoices.reduce((a, inv) => a + _invPayableUsdEq(inv), 0);
+    const baseUsdEq = baseForShare.reduce((a, inv) => a + _invPayableUsdEq(inv), 0);
+    const sharePct = baseUsdEq > 0 ? Math.round((selectedUsdEq / baseUsdEq) * 1000) / 10 : 0;
 
-        if (!byCurrency[iso]) byCurrency[iso] = { payable: 0, paid: 0, count: 0 };
-        byCurrency[iso].payable += payable;
-        byCurrency[iso].paid    += Math.min(paid, payable); // fazla ödemeyi kırp
-        byCurrency[iso].count   += 1;
-    });
+    const tryPaid = totals.TRY.paid;
+    const tryRemain = Math.max(totals.TRY.payable - totals.TRY.paid, 0);
+    const usdPaid = totals.USD.paid;
+    const usdRemain = Math.max(totals.USD.payable - totals.USD.paid, 0);
 
-    container.innerHTML = ''; // önceki barları temizle
+    const captionPaid = isIncoming ? 'Ödenen' : 'Tahsil Edilen';
+    const captionRemain = isIncoming ? 'Kalan Borç' : 'Kalan Alacak';
+    const closureLabel = isIncoming ? 'Ortalama Odeme Kapanış Günü' : 'Ortalama Tahsilat Kapanış Günü';
+    const shareLabel = 'Firma Payi';
+    const paidCount = invoices.filter(inv => String(inv.status || '').toLowerCase() === 'paid').length;
+    const partialCount = invoices.filter(inv => String(inv.status || '').toLowerCase() === 'partial').length;
+    const unpaidCount = invoices.filter(inv => String(inv.status || 'unpaid').toLowerCase() === 'unpaid').length;
+    const totalCount = Math.max(invoices.length, 1);
+    const paidPct = Math.round((paidCount / totalCount) * 100);
+    const partialPct = Math.round((partialCount / totalCount) * 100);
+    const unpaidPct = Math.round((unpaidCount / totalCount) * 100);
+    const paidLabel = isIncoming ? 'ödendi' : 'tahsil';
+    const partialLabel = 'kısmi';
+    const unpaidLabel = isIncoming ? 'ödenmedi' : 'açık';
 
-    // TRY ve USD her zaman ekranda sabit durur
-    // Veri varsa renkli, yoksa gri placeholder
-    const preferredOrder = ['TRY', 'USD'];
+    container.innerHTML = `
+      <div class="dash-left-stack">
+        <div class="dash-card">
+          <div class="dash-label">Toplam Ürün Adedi</div>
+          <div class="dash-value dash-value--primary">${Number(totalQty || 0).toLocaleString('tr-TR')}</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">Farklı Ürün Sayısı</div>
+          <div class="dash-value">${uniqueSku.toLocaleString('tr-TR')}</div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">${closureLabel}</div>
+          <div class="dash-value dash-value--success">${closureAvgRounded} gun</div>
+        </div>
+      </div>
 
-    preferredOrder.forEach(iso => {
-        const data = byCurrency[iso];
-        if (data && data.count > 0) {
-            const remaining = Math.max(data.payable - data.paid, 0);
-            container.appendChild(buildProgressBar(iso, data.paid, remaining, data.payable, isIncoming));
-        } else {
-            container.appendChild(buildPlaceholderBar(iso, isIncoming));
-        }
-    });
-}
+      <div class="dash-right-top">
+        <div class="dash-card">
+          <div class="dash-label">TRY Özeti</div>
+          <div class="currency-split">
+            <div class="currency-pill"><div class="k">Toplam</div><div class="v">${_fmtAmount(totals.TRY.payable, 'TRY')}</div></div>
+            <div class="currency-pill"><div class="k">${captionPaid}</div><div class="v">${_fmtAmount(tryPaid, 'TRY')}</div></div>
+            <div class="currency-pill"><div class="k">${captionRemain}</div><div class="v">${_fmtAmount(tryRemain, 'TRY')}</div></div>
+          </div>
+        </div>
+        <div class="dash-card">
+          <div class="dash-label">USD Özeti</div>
+          <div class="currency-split">
+            <div class="currency-pill"><div class="k">Toplam</div><div class="v">${_fmtAmount(totals.USD.payable, 'USD')}</div></div>
+            <div class="currency-pill"><div class="k">${captionPaid}</div><div class="v">${_fmtAmount(usdPaid, 'USD')}</div></div>
+            <div class="currency-pill"><div class="k">${captionRemain}</div><div class="v">${_fmtAmount(usdRemain, 'USD')}</div></div>
+          </div>
+        </div>
+      </div>
 
-// Para birimi etiketini döndürür: TRY → "TL", USD → "USD" ...
-function _isoLabel(iso) { return iso === 'TRY' ? 'TL' : iso; }
-
-// Sayıyı formatlı string'e çevirir
-function _fmtAmount(num, iso) {
-    const n = Number(num) || 0;
-    if (iso === 'TRY') return n.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
-    return `${n.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${_isoLabel(iso)}`;
-}
-
-// Filtre yokken gösterilen gri boş placeholder bar
-function buildPlaceholderBar(iso, isIncoming) {
-    const label     = _isoLabel(iso);
-    const titlePaid = isIncoming ? 'Ödenen' : 'Tahsil Edilen';
-    const titleRem  = isIncoming ? 'Kalan Borç' : 'Kalan Alacak';
-    const zeroFmt   = _fmtAmount(0, iso);
-
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = `
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 16px 20px;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-        opacity: 0.55;
+      <div class="dash-bottom">
+        <div class="dash-card">
+          <div class="dash-label">${shareLabel}</div>
+          <div class="donut-wrap">
+            <div class="donut-chart" style="--pct:${Math.max(0, Math.min(100, sharePct))};">
+              <div class="donut-center">%${sharePct.toFixed(1)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="dash-card">
+          <div class="status-bars">
+            <div class="status-row">
+              <div class="status-label">${paidLabel}</div>
+              <div class="status-track"><div class="status-fill status-fill--paid" style="width:${paidPct}%;"></div></div>
+              <div class="status-count">${paidCount}</div>
+            </div>
+            <div class="status-row">
+              <div class="status-label">${partialLabel}</div>
+              <div class="status-track"><div class="status-fill status-fill--partial" style="width:${partialPct}%;"></div></div>
+              <div class="status-count">${partialCount}</div>
+            </div>
+            <div class="status-row">
+              <div class="status-label">${unpaidLabel}</div>
+              <div class="status-track"><div class="status-fill status-fill--unpaid" style="width:${unpaidPct}%;"></div></div>
+              <div class="status-count">${unpaidCount}</div>
+            </div>
+          </div>
+        </div>
+      </div>
     `;
-
-    const heading = document.createElement('div');
-    heading.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;';
-    heading.innerHTML = `
-        <span style="font-size:13px; font-weight:800; color:#64748b; letter-spacing:0.5px;">${label}</span>
-        <span style="font-size:12px; color:#94a3b8;">${isIncoming ? 'Toplam' : 'Toplam Alacak'}: ${zeroFmt}</span>
-    `;
-    wrapper.appendChild(heading);
-
-    const barWrap = document.createElement('div');
-    barWrap.style.cssText = 'height:28px; border-radius:8px; background:#e2e8f0;';
-    wrapper.appendChild(barWrap);
-
-    const labels = document.createElement('div');
-    labels.style.cssText = 'display:flex; justify-content:space-between; margin-top:10px;';
-    labels.innerHTML = `
-        <span style="font-size:13px; font-weight:700; color:#94a3b8;">✓ ${titlePaid}: ${zeroFmt}</span>
-        <span style="font-size:13px; font-weight:700; color:#94a3b8;">✕ ${titleRem}: ${zeroFmt}</span>
-    `;
-    wrapper.appendChild(labels);
-
-    return wrapper;
-}
-
-// Tek bir progress bar HTML elementi oluşturur ve döndürür
-function buildProgressBar(iso, paid, remaining, total, isIncoming) {
-    const label   = _isoLabel(iso);
-    const paidPct = total > 0 ? Math.round((paid / total) * 100) : 0;
-    const remPct  = 100 - paidPct;
-
-    // Başlık: gelen = borç/ödenen, giden = alacak/tahsil
-    const titlePaid = isIncoming ? 'Ödenen' : 'Tahsil Edilen';
-    const titleRem  = isIncoming ? 'Kalan Borç' : 'Kalan Alacak';
-
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = `
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 16px 20px;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    `;
-
-    // Para birimi başlığı
-    const heading = document.createElement('div');
-    heading.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;';
-    heading.innerHTML = `
-        <span style="font-size:13px; font-weight:800; color:#64748b; letter-spacing:0.5px;">${label}</span>
-        <span style="font-size:12px; color:#94a3b8;">${isIncoming ? 'Toplam' : 'Toplam Alacak'}: ${_fmtAmount(total, iso)}</span>
-    `;
-    wrapper.appendChild(heading);
-
-    // Progress bar gövdesi
-    const barWrap = document.createElement('div');
-    barWrap.style.cssText = `
-        display: flex;
-        height: 28px;
-        border-radius: 8px;
-        overflow: hidden;
-        background: #f1f5f9;
-    `;
-
-    // Ödenen (yeşil) dilim — sıfırsa gösterme
-    if (paid > 0) {
-        const paidBar = document.createElement('div');
-        paidBar.style.cssText = `
-            width: ${paidPct}%;
-            background: linear-gradient(90deg, #16a34a, #22c55e);
-            transition: width 0.5s ease;
-            min-width: ${paid > 0 ? '4px' : '0'};
-        `;
-        barWrap.appendChild(paidBar);
-    }
-
-    // Kalan (kırmızı) dilim — sıfırsa gösterme
-    if (remaining > 0) {
-        const remBar = document.createElement('div');
-        remBar.style.cssText = `
-            width: ${remPct}%;
-            background: linear-gradient(90deg, #f87171, #ef4444);
-            transition: width 0.5s ease;
-            min-width: ${remaining > 0 ? '4px' : '0'};
-        `;
-        barWrap.appendChild(remBar);
-    }
-
-    // Tamamen ödenmişse tüm bar yeşil
-    if (paid > 0 && remaining === 0) {
-        barWrap.innerHTML = '';
-        const fullBar = document.createElement('div');
-        fullBar.style.cssText = 'width:100%; background:linear-gradient(90deg,#16a34a,#22c55e); border-radius:8px;';
-        barWrap.appendChild(fullBar);
-    }
-
-    wrapper.appendChild(barWrap);
-
-    // Sayılar: solda ödenen (yeşil), sağda kalan (kırmızı)
-    const labels = document.createElement('div');
-    labels.style.cssText = 'display:flex; justify-content:space-between; margin-top:10px;';
-    labels.innerHTML = `
-        <span style="font-size:13px; font-weight:700; color:#16a34a;">
-            ✓ ${titlePaid}: ${_fmtAmount(paid, iso)}
-        </span>
-        <span style="font-size:13px; font-weight:700; color:#ef4444;">
-            ✕ ${titleRem}: ${_fmtAmount(remaining, iso)}
-        </span>
-    `;
-    wrapper.appendChild(labels);
-
-    return wrapper;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2274,6 +2373,7 @@ async function saveInvoiceToDatabase(e) {
         const internalToggle = row.querySelector('.internal-toggle');
         const isInternal = internalToggle ? !!internalToggle.checked : false;
         const skuVal = row.querySelector('.line-sku-val')?.value?.trim() || '';
+        const poItemId = row.querySelector('.po-item-id-val')?.value || null;
         return {
             product_name: productName,
             product_code: skuVal || null,
@@ -2283,13 +2383,15 @@ async function saveInvoiceToDatabase(e) {
             tax_rate: taxRate,
             total_price_cur: lineTotal,
             currency: formCurrency,
-            is_internal: isInternal
+            is_internal: isInternal,
+            purchase_order_item_id: poItemId
         };
     }).filter(item => item.product_name && item.quantity > 0);
 
     // GÜNCELLEME MODU: Düzenleme ekranında XML zorunluluğu yok
     if (invoiceId) {
         const updatePayload = {
+            update_stock: document.getElementById('f_update_stock')?.checked !== false,
             invoice: {
                 // status ve paid_amount güncellenmez — payments tablosundan otomatik hesaplanıyor
                 due_date: document.getElementById('f_due_date')?.value || null,
@@ -2328,6 +2430,7 @@ async function saveInvoiceToDatabase(e) {
             }
 
             alert(result.message || "Fatura başarıyla güncellendi.");
+            clearStockCaches();
             closeInvoiceModal();
             refreshData(true);
             return;
@@ -2380,6 +2483,7 @@ async function saveInvoiceToDatabase(e) {
     const payload = {
         submit_view: currentView,
         parsed_view: currentParsedData.parsed_view || null,
+        update_stock: document.getElementById('f_update_stock')?.checked !== false,
         company: {
             ...(currentParsedData.company || {}),
             ...companyFromUi
@@ -2414,6 +2518,7 @@ async function saveInvoiceToDatabase(e) {
 
         // Başarılı işlem sonrası UI güncellemeleri
         alert(result.message);
+        clearStockCaches();
         closeInvoiceModal();
         refreshData(true);
 
@@ -2561,7 +2666,7 @@ function recalcInvoiceTotalsFromLines() {
     if (totalEl) totalEl.value = (totalNet + totalTax).toFixed(2);
 }
 
-function addLineItem(desc = '', qty = 1, price = 0, total = 0, taxRate = 20, sku = '') {
+function addLineItem(desc = '', qty = 1, price = 0, total = 0, taxRate = 20, sku = '', linkedPoItemId = '') {
     const row = document.createElement('tr');
     row.innerHTML = `
         <td><input type="text" value="${desc}" placeholder="Ürün adı"></td>
@@ -2572,11 +2677,18 @@ function addLineItem(desc = '', qty = 1, price = 0, total = 0, taxRate = 20, sku
         <td class="text-center">
             <input type="checkbox" class="internal-toggle" title="Şirket İçi Kullanım (Sarf)">
             <input type="hidden" class="tax-rate-val" value="${taxRate}">
+            <input type="hidden" class="po-item-id-val" value="${linkedPoItemId || ''}">
         </td>
-        <td><button type="button" class="btn-text" onclick="this.closest('tr').remove(); recalcInvoiceTotalsFromLines();" style="color:var(--danger)">✕</button></td>
+        <td style="min-width:60px;">
+            <button type="button" class="btn-text" onclick="this.closest('tr').remove(); recalcInvoiceTotalsFromLines();" style="color:var(--danger); float:right;">✕</button>
+            <div class="po-badge-container" style="clear:both; margin-top:4px;"></div>
+        </td>
     `;
     const skuInput   = row.querySelector('.line-sku-val');
-    if (skuInput) skuInput.value = String(sku ?? '').trim();
+    if (skuInput) {
+        skuInput.value = String(sku ?? '').trim();
+        skuInput.addEventListener('input', () => checkPendingOrdersForRow(row));
+    }
     const qtyInput   = row.querySelector('td:nth-child(3) input[type="number"]');
     const priceInput = row.querySelector('td:nth-child(4) input[type="number"]');
     const totalInput = row.querySelector('td:nth-child(5) input[type="number"]');
@@ -2595,6 +2707,148 @@ function addLineItem(desc = '', qty = 1, price = 0, total = 0, taxRate = 20, sku
     // Satırı önce DOM'a ekle, sonra hesapla — yoksa recalcInvoiceTotalsFromLines bu satırı göremez
     document.getElementById('lineItemsBody').appendChild(row);
     recalcLineTotal();
+
+    // Satır eklendikten sonra, eğer bekleyen sipariş verisi varsa bu ürünle eşleşiyor mu kontrol et
+    checkPendingOrdersForRow(row);
+}
+
+// Global olarak seçili firmanın bekleyen siparişlerini tutarız
+let currentPendingOrders = [];
+
+// Firma değiştiğinde bekleyen siparişleri çek (Hem XML yüklemede hem manuel seçimde çağrılır)
+async function fetchPendingOrdersForCompany(companyVknOrId) {
+    if (!companyVknOrId) {
+        currentPendingOrders = [];
+        updateAllRowsWithPendingOrders();
+        return;
+    }
+
+    try {
+        // Backend'deki yeni API'yi çağırıyoruz
+        // company_id veya vkn ile çalışacak bir endpoint yaptık ama API'de :company_id bekliyor.
+        // Fatura ekranında VKN var, ID'yi VKN üzerinden veritabanından mı bulsak?
+        // Index.js'i değiştirdik, GET /api/purchase-orders/pending/:company_id yaptık
+        // Bizde ekranda f_vkn var. Eğer ID lazımsa, arka planda bir sorgu yapabiliriz ya da API'yi VKN ile çalışacak şekilde güncelleyebiliriz.
+        // Hızlı çözüm: API'ye VKN yollayalım, API veritabanından o VKN'li firmayı bulsun.
+        // index.js'te şirket bulma işlemi var. Ben fetch URL'ine ?vkn=${vkn} göndereyim, index.js'i de öyle güncelleyelim.
+        const res = await fetch(`/api/purchase-orders/pending-by-vkn?vkn=${encodeURIComponent(companyVknOrId)}`);
+        if (res.ok) {
+            currentPendingOrders = await res.json();
+        } else {
+            currentPendingOrders = [];
+        }
+    } catch(e) {
+        console.error("Backorder çekilirken hata:", e);
+        currentPendingOrders = [];
+    }
+    
+    updateAllRowsWithPendingOrders();
+}
+
+function updateAllRowsWithPendingOrders() {
+    const rows = document.querySelectorAll('#lineItemsBody tr');
+    rows.forEach(row => checkPendingOrdersForRow(row));
+}
+
+function clearStockCaches() {
+    try {
+        sessionStorage.removeItem('inokas_stock_v2');
+        sessionStorage.removeItem('inokas_movements_v1');
+        sessionStorage.removeItem('inokas_pending_po_v1');
+        sessionStorage.removeItem('inokas_stock_summary_v1');
+    } catch (e) {
+        console.warn('Stok cache temizlenemedi:', e);
+    }
+}
+
+function checkPendingOrdersForRow(row) {
+    const badgeContainer = row.querySelector('.po-badge-container');
+    const skuInput = row.querySelector('.line-sku-val');
+    const hiddenIdInput = row.querySelector('.po-item-id-val');
+    
+    if (!badgeContainer || !skuInput || !hiddenIdInput) return;
+
+    // Zaten bağlıysa rozeti göster ve çık
+    if (hiddenIdInput.value) {
+        const linkedPo = currentPendingOrders.find(po => po.id === hiddenIdInput.value);
+        const linkedPoNo = linkedPo?.purchase_orders?.po_number || 'Sipariş';
+        const linkedInfo = document.createElement('div');
+        linkedInfo.style.cssText = 'font-size:11px; color:#16a34a; font-weight:600; margin-top:4px;';
+        linkedInfo.innerHTML = `✅ ${linkedPoNo} bağlı`;
+        badgeContainer.innerHTML = '';
+        badgeContainer.appendChild(linkedInfo);
+        return; // Bağlandıysa ellemeyelim
+    }
+
+    badgeContainer.innerHTML = '';
+    const sku = (skuInput.value || '').trim().toLowerCase();
+    
+    if (!sku || currentPendingOrders.length === 0) return;
+
+    // Bu sku'ya uyan ve bekleyen miktar > 0 olan sipariş kalemi var mı?
+    const matchedItems = currentPendingOrders
+        .filter(po =>
+            po.products &&
+            (po.products.product_code || '').toLowerCase() === sku &&
+            (Number(po.ordered_qty) - Number(po.received_qty)) > 0
+        )
+        .sort((a, b) => {
+            const da = String(a.purchase_orders?.order_date || '');
+            const db = String(b.purchase_orders?.order_date || '');
+            return da.localeCompare(db); // FIFO: eski sipariş üstte
+        });
+
+    if (matchedItems.length === 0) return;
+
+    const buildLinkButton = (getSelectedPoItem) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-text';
+        btn.style.cssText = 'font-size:11px; color:#0ea5e9; font-weight:600; padding:2px 6px; background:rgba(14,165,233,0.1); border-radius:4px; margin-top:4px;';
+        btn.innerHTML = `🔗 Siparişe Bağla`;
+        btn.onclick = () => {
+            const poItem = getSelectedPoItem();
+            if (!poItem) return;
+            hiddenIdInput.value = poItem.id;
+            btn.style.color = '#16a34a';
+            btn.style.background = 'rgba(22,163,74,0.1)';
+            btn.innerHTML = `✅ ${poItem.purchase_orders?.po_number || 'Sipariş'} bağlandı`;
+            btn.disabled = true;
+        };
+        return btn;
+    };
+
+    // Tek eşleşme: hızlı bağla butonu
+    if (matchedItems.length === 1) {
+        const only = matchedItems[0];
+        const remaining = Number(only.ordered_qty) - Number(only.received_qty);
+        const info = document.createElement('div');
+        info.style.cssText = 'font-size:10px; color:#0369a1; margin-top:2px;';
+        info.textContent = `${only.purchase_orders?.po_number || 'PO'} • Bekleyen: ${remaining}`;
+        badgeContainer.appendChild(info);
+        badgeContainer.appendChild(buildLinkButton(() => only));
+        return;
+    }
+
+    // Çoklu eşleşme: sipariş numarasına göre kullanıcı seçsin
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%; margin-top:4px; font-size:11px; padding:4px 6px; border:1px solid #bae6fd; border-radius:4px; color:#0f172a; background:#f0f9ff;';
+
+    matchedItems.forEach((poItem, idx) => {
+        const remaining = Number(poItem.ordered_qty) - Number(poItem.received_qty);
+        const option = document.createElement('option');
+        option.value = poItem.id;
+        option.textContent = `${poItem.purchase_orders?.po_number || `PO-${idx + 1}`} • Bekleyen: ${remaining}`;
+        select.appendChild(option);
+    });
+
+    const help = document.createElement('div');
+    help.style.cssText = 'font-size:10px; color:#0369a1; margin-top:2px;';
+    help.textContent = `${matchedItems.length} açık sipariş bulundu`;
+
+    badgeContainer.appendChild(help);
+    badgeContainer.appendChild(select);
+    badgeContainer.appendChild(buildLinkButton(() => matchedItems.find(x => x.id === select.value) || matchedItems[0]));
 }
 
 
@@ -2660,6 +2914,7 @@ function switchView(view) {
     currentView = view;
     document.getElementById('tabGelen').classList.toggle('active', view === 'gelen');
     document.getElementById('tabGiden').classList.toggle('active', view === 'giden');
+    updateActionButtonsTheme();
 
     // Tümünü Göster/Gizle butonunu yeni sekmenin kendi durumuna güncelle
     const _togBtn = document.getElementById('btnToggleShowAll');
@@ -2683,4 +2938,8 @@ function switchView(view) {
     if (bulkModal && bulkModal.style.display === 'flex') {
         updateBulkDirectionHint();
     }
+}
+
+function updateActionButtonsTheme() {
+    document.body.setAttribute('data-view', currentView);
 }

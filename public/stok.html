@@ -8,7 +8,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="stok.css">
+  <link rel="stylesheet" href="stok.css?v=20260424-dropdown">
   <link rel="stylesheet" href="nav.css?v=nav-slide-4-gutter">
 </head>
 
@@ -24,11 +24,9 @@
       <div class="nav-cluster">
         <span class="nav-pill" id="navPill" aria-hidden="true"></span>
         <div class="nav-links-row" role="navigation" aria-label="Ana menü">
-          <button type="button" class="nav-link" data-nav-id="siparis">Siparişler</button>
-          <button type="button" class="nav-link" data-nav-id="teklif">Teklifler</button>
           <a href="/" class="nav-link" data-nav-id="faturalar">Faturalar</a>
           <button type="button" class="nav-link active" data-nav-id="stok">Stok</button>
-          <a href="/cari-analiz.html" class="nav-link" data-nav-id="cari">Cari Analiz</a>
+          <a href="/dmo/dmo.html" class="nav-link" data-nav-id="dmo">DMO</a>
         </div>
       </div>
       <button type="button" class="nav-link nav-link--logout logout">Çıkış</button>
@@ -37,68 +35,184 @@
 
   <main class="main-container">
     <header class="page-header">
-      <h1>Stok Özeti</h1>
-      <p>Faturalardan türetilen giriş/çıkış hareketleri</p>
+      <h1>Stok Yönetimi</h1>
+      <p>Depo durumu, hareketler ve bekleyen siparişler</p>
     </header>
 
-    <section class="stats-grid usd-top">
-      <div class="stat-card stat-card-usd">
-        <label>Depo Stok (USD Bazlı)</label>
-        <h2 id="stat-stock-usd" class="text-primary">$0.00</h2>
+    <!-- DEPO DASHBOARD -->
+    <section class="stock-dashboard">
+      <div class="stock-dash-left">
+        <div class="stat-card">
+          <label>Toplam Ürün Çeşidi</label>
+          <h2 id="stat-product-count">0</h2>
+        </div>
+        <div class="stat-card">
+          <label>Depoda Bulunan Ürün</label>
+          <h2 id="stat-current" class="text-primary">0</h2>
+        </div>
+        <div class="stat-card">
+          <label>Depoya Giren</label>
+          <h2 id="stat-total-in" class="text-success">0</h2>
+        </div>
+        <div class="stat-card">
+          <label>Depodan Çıkan</label>
+          <h2 id="stat-total-out" class="text-danger">0</h2>
+        </div>
+        <div class="stat-card">
+          <label>Bekleyen Backorder</label>
+          <h2 id="stat-pending-po" class="text-warning">0</h2>
+        </div>
       </div>
-      <div class="stat-card stat-card-usd">
-        <label>Toplam Çıkış (USD Bazlı)</label>
-        <h2 id="stat-out-usd" class="text-danger">$0.00</h2>
+      <div class="stock-dash-right">
+        <div class="insight-tabs">
+          <button type="button" class="insight-tab-btn active" data-insight-tab="profit">En Çok Kazandıran Ürünler</button>
+          <button type="button" class="insight-tab-btn" data-insight-tab="sold">En Çok Satan Ürünler</button>
+          <button type="button" class="insight-tab-btn" data-insight-tab="slow">Yavaş Dönen / Şişmiş Stok</button>
+        </div>
+        <div class="insight-body">
+          <div id="stockInsightSubLabel" class="insight-sub-label">Top 10 (yükleniyor)</div>
+          <div id="stockInsightBars" class="insight-bars"></div>
+        </div>
       </div>
     </section>
 
-    <section class="stats-grid compact">
-      <div class="stat-card">
-        <label>Toplam Ürün</label>
-        <h2 id="stat-product-count">0</h2>
-      </div>
-      <div class="stat-card">
-        <label>Depoya Giren</label>
-        <h2 id="stat-total-in" class="text-success">0</h2>
-      </div>
-      <div class="stat-card">
-        <label>Depodan Çıkan</label>
-        <h2 id="stat-total-out" class="text-danger">0</h2>
-      </div>
-      <div class="stat-card">
-        <label>Eldeki Miktar</label>
-        <h2 id="stat-current" class="text-primary">0</h2>
-      </div>
-    </section>
-
+    <!-- 3 SEKMELİ İÇERİK ALANI -->
     <section class="content-card">
-      <div class="toolbar">
-        <input type="text" id="stockSearch" placeholder="Ürün veya SKU ara...">
+      <div class="tab-bar">
+        <button class="tab-btn active" id="tabDepo" onclick="switchStockTab('depo')">Depo Durumu</button>
+        <button class="tab-btn" id="tabHareketler" onclick="switchStockTab('hareketler')">Stok Hareketleri</button>
+        <button class="tab-btn" id="tabBekleyen" onclick="switchStockTab('bekleyen')">Bekleyen Siparişler</button>
       </div>
 
-      <div class="table-wrap">
-        <table class="stocks-table">
-          <thead>
-            <tr>
-              <th>Ürün</th>
-              <th>SKU</th>
-              <th class="text-right">Giriş</th>
-              <th class="text-right">Çıkış</th>
-              <th class="text-right">Mevcut</th>
-              <th class="text-right">Giriş Birim USD</th>
-              <th class="text-right">Çıkış Birim USD</th>
-              <th class="text-right">Stok USD</th>
-            </tr>
-          </thead>
-          <tbody id="stocksTableBody"></tbody>
-        </table>
+      <!-- TAB 1: DEPO DURUMU -->
+      <div id="tabContent-depo" class="tab-content active">
+        <div class="toolbar">
+          <input type="text" id="stockSearch" placeholder="Ürün adı veya SKU ara...">
+        </div>
+        <div class="table-wrap">
+          <table class="stocks-table">
+            <thead>
+              <tr>
+                <th>Ürün Adı</th>
+                <th>SKU / Kod</th>
+                <th class="text-right">Giren</th>
+                <th class="text-right">Çıkan</th>
+                <th class="text-right">Mevcut</th>
+                <th class="text-right">Backorder</th>
+                <th class="text-right">Rezerve</th>
+                <th class="text-right">Hediye</th>
+                <th class="text-right">Stok Değeri</th>
+              </tr>
+            </thead>
+            <tbody id="stocksTableBody"></tbody>
+          </table>
+        </div>
+        <div id="stocksEmptyState" class="empty-state">Stok verisi yükleniyor...</div>
       </div>
-      <div id="stocksEmptyState" class="empty-state">Stok verisi yükleniyor...</div>
+
+      <!-- TAB 2: STOK HAREKETLERİ -->
+      <div id="tabContent-hareketler" class="tab-content">
+        <div class="toolbar" style="gap:10px; flex-wrap:wrap;">
+          <input type="text" id="movementSearch" placeholder="Ürün adı veya SKU ara..." oninput="renderMovementsTable()">
+          <div id="movementCompanyDropdownWrap" class="company-dropdown-wrap">
+            <button type="button" id="movementCompanyDropdownBtn" class="company-dropdown-btn" onclick="toggleMovementCompanyDropdown()">
+              <span id="movementCompanyDropdownLabel">Tüm Firmalar</span>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="flex-shrink:0"><path d="M2 4l4 4 4-4" stroke="#64748b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div id="movementCompanyDropdownPanel" class="company-dropdown-panel" style="display:none;">
+              <input type="text" id="movementCompanyDropdownSearch" class="company-dropdown-search" placeholder="Firma ara..." oninput="filterMovementCompanyDropdown()" autocomplete="off">
+              <ul id="movementCompanyDropdownList" class="company-dropdown-list"></ul>
+            </div>
+          </div>
+          <input type="hidden" id="movementCompany" value="">
+          <select id="movementDirection" onchange="renderMovementsTable()">
+            <option value="">Tüm Hareketler</option>
+            <option value="INCOMING">Giriş (Gelen Fatura)</option>
+            <option value="OUTGOING">Çıkış (Giden Fatura)</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="stocks-table">
+            <thead>
+              <tr>
+                <th>Tarih</th>
+                <th>İşlem</th>
+                <th>Fatura No</th>
+                <th>Firma</th>
+                <th>Ürün Adı</th>
+                <th>SKU</th>
+                <th class="text-right">Miktar</th>
+                <th class="text-right">Birim Fiyat</th>
+                <th>Döviz</th>
+              </tr>
+            </thead>
+            <tbody id="movementsTableBody"></tbody>
+          </table>
+        </div>
+        <div id="movementsEmptyState" class="empty-state">Hareket verisi yükleniyor...</div>
+      </div>
+
+      <!-- TAB 3: BEKLEYEN SİPARİŞLER -->
+      <div id="tabContent-bekleyen" class="tab-content">
+        <form id="pendingPoForm" class="mini-po-form">
+          <div class="mini-po-title">Yeni Backorder Girişi</div>
+          <div class="mini-po-grid mini-po-grid--layout">
+            <input type="text" id="poCompanyVkn" class="po-company-vkn" placeholder="Firma VKN/TCKN" required>
+            <input type="text" id="poCompanyName" class="po-company-name" placeholder="Firma Adı (bulunamazsa manuel girin)">
+          </div>
+          <div class="mini-po-lines-wrap">
+            <table class="mini-po-lines-table">
+              <thead>
+                <tr>
+                  <th>Ürün Kodu</th>
+                  <th>Ürün Adı</th>
+                  <th>Sipariş Miktarı</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="poLinesBody"></tbody>
+            </table>
+            <button type="button" class="po-btn" onclick="addPendingPoLine()">+ Ürün Satırı Ekle</button>
+          </div>
+          <div class="mini-po-actions">
+            <button type="submit" class="mini-po-submit">Bekleyen Sipariş Ekle</button>
+            <span id="pendingPoFormMsg" class="mini-po-msg"></span>
+          </div>
+        </form>
+
+        <div class="toolbar">
+          <input type="text" id="poSearch" placeholder="Firma veya ürün ara..." oninput="renderPendingOrdersTable()">
+          <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:#475569;">
+            <input type="checkbox" id="poShowCompleted" onchange="renderPendingOrdersTable()">
+            Tamamlananları göster
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table class="stocks-table">
+            <thead>
+              <tr>
+                <th>Sipariş No</th>
+                <th>Sipariş Tarihi</th>
+                <th>Tedarikçi</th>
+                <th>Ürün Adı</th>
+                <th>SKU</th>
+                <th class="text-right">Sipariş Edilen</th>
+                <th class="text-right">Gelen</th>
+                <th class="text-right">Kalan (Backorder)</th>
+                <th>Durum</th>
+                <th>İşlem</th>
+              </tr>
+            </thead>
+            <tbody id="poTableBody"></tbody>
+          </table>
+        </div>
+        <div id="poEmptyState" class="empty-state">Bekleyen sipariş verisi yükleniyor...</div>
+      </div>
     </section>
   </main>
 
   <script src="nav-pill.js?v=nav-slide-3-ease"></script>
-  <script src="stok.js"></script>
+  <script src="stok.js?v=20260424-insight-tab-order"></script>
 </body>
 
 </html>

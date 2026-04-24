@@ -1,6 +1,8 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 const app = express();
 try {
@@ -49,6 +51,72 @@ app.get('/', (req, res) => {
   res.type('html').send(getFaturalarIndexHtml());
 });
 
+// DMO sayfası (ayrı klasör) erişimi
+app.use('/dmo', express.static(path.join(__dirname, 'dmo')));
+app.get('/dmo', (req, res) => {
+  res.redirect('/dmo/dmo.html');
+});
+
+// DMO Python API proxy (tarayıcıdan localhost:5000 bağımlılığını kaldırır)
+const DMO_PY_HOST = process.env.DMO_PY_HOST || '127.0.0.1';
+const DMO_PY_PORT = Number(process.env.DMO_PY_PORT || 5000);
+
+app.post('/api/dmo/parse-pdf', (req, res) => {
+  const proxyReq = http.request({
+    hostname: DMO_PY_HOST,
+    port: DMO_PY_PORT,
+    path: '/parse-pdf',
+    method: 'POST',
+    headers: {
+      ...req.headers,
+      host: `${DMO_PY_HOST}:${DMO_PY_PORT}`
+    }
+  }, (proxyRes) => {
+    res.status(proxyRes.statusCode || 502);
+    Object.entries(proxyRes.headers || {}).forEach(([k, v]) => {
+      if (v !== undefined) res.setHeader(k, v);
+    });
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (err) => {
+    console.error('DMO parse-pdf proxy hatası:', err.message);
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'DMO parse servisine bağlanılamadı.' });
+    }
+  });
+
+  req.pipe(proxyReq);
+});
+
+app.get('/api/dmo/usd-eur-rate', async (req, res) => {
+  try {
+    const r = await fetch(`http://${DMO_PY_HOST}:${DMO_PY_PORT}/usd-eur-rate`);
+    const text = await r.text();
+    res.status(r.status);
+    res.setHeader('content-type', r.headers.get('content-type') || 'application/json; charset=utf-8');
+    res.send(text);
+  } catch (err) {
+    console.error('DMO usd-eur-rate proxy hatası:', err.message);
+    res.status(502).json({ error: 'DMO kur servisine bağlanılamadı.' });
+  }
+});
+
+app.post('/api/dmo/scrape-dmo-prices', async (req, res) => {
+  try {
+    const r = await fetch(`http://${DMO_PY_HOST}:${DMO_PY_PORT}/scrape-dmo-prices`, {
+      method: 'POST'
+    });
+    const text = await r.text();
+    res.status(r.status);
+    res.setHeader('content-type', r.headers.get('content-type') || 'application/json; charset=utf-8');
+    res.send(text);
+  } catch (err) {
+    console.error('DMO scrape proxy hatası:', err.message);
+    res.status(502).json({ error: 'DMO scrape servisine bağlanılamadı.' });
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
     // Tarayıcıların eski index.html / faturalar.js tutmasını engelle (deploy sonrası "eski kod" semptomu)
@@ -76,6 +144,7 @@ app.get('/api/inokas-vkn', (req, res) => {
 app.post('/api/save-invoice', async (req, res) => {
   try {
     const fullData = req.body; // This is the package coming from faturalar.js
+    const shouldUpdateStock = fullData?.update_stock !== false;
     const inokasVkn = (process.env.INOKAS_VKN || '').trim();
     const direction = String(fullData?.invoice?.direction || '').toUpperCase();
     const submitView = String(fullData?.submit_view || '').trim();
@@ -166,6 +235,39 @@ app.post('/api/save-invoice', async (req, res) => {
 
     if (itemsError) throw itemsError;
 
+    // --- STEP D: UPDATE BACKORDER (PURCHASE ORDERS) IF LINKED ---
+    if (shouldUpdateStock) {
+      for (const item of itemsToSave) {
+        if (item.purchase_order_item_id) {
+          // Increment received_qty
+          // Note: Supabase doesn't have a direct "increment" via standard update without RPC,
+          // but we can fetch the current value and update, or use an RPC.
+          // Since we're in Node, let's fetch current and update.
+          const { data: poi } = await supabase
+            .from('purchase_order_items')
+            .select('received_qty, purchase_order_id')
+            .eq('id', item.purchase_order_item_id)
+            .single();
+
+          if (poi) {
+            const newQty = Number(poi.received_qty) + Number(item.quantity);
+            await supabase
+              .from('purchase_order_items')
+              .update({ received_qty: newQty })
+              .eq('id', item.purchase_order_item_id);
+            
+            // Update order status to 'Kısmi Geldi' or 'Tamamlandı'
+            // For simplicity, just set it to 'Kısmi Geldi' if it was 'Bekliyor'
+            await supabase
+              .from('purchase_orders')
+              .update({ status: 'Kısmi Geldi' })
+              .eq('id', poi.purchase_order_id)
+              .eq('status', 'Bekliyor');
+          }
+        }
+      }
+    }
+
     // Stok hareketleri DB trigger'ı tarafından otomatik üretilir.
 
     // If everything worked, send a success message back to the browser
@@ -197,6 +299,7 @@ app.get('/api/stocks/summary', async (req, res) => {
         unit_price_cur,
         currency,
         invoices!invoice_items_invoice_id_fkey (
+          invoice_date,
           direction,
           currency,
           calculation_rate
@@ -204,6 +307,23 @@ app.get('/api/stocks/summary', async (req, res) => {
       `);
 
     if (error) throw error;
+
+    const { data: productRows, error: productErr } = await supabase
+      .from('products')
+      .select('product_code, reserved_quantity, gift_quentity');
+    if (productErr) throw productErr;
+
+    const productByCode = new Map(
+      (productRows || [])
+        .filter((p) => String(p.product_code || '').trim())
+        .map((p) => [
+          String(p.product_code || '').trim(),
+          {
+            reserved_quantity: Number(p.reserved_quantity || 0),
+            gift_quantity: Number(p.gift_quentity || 0)
+          }
+        ])
+    );
 
     const grouped = {};
 
@@ -225,6 +345,11 @@ app.get('/api/stocks/summary', async (req, res) => {
           total_out_usd: 0,
           in_qty_for_avg_usd: 0,
           out_qty_for_avg_usd: 0,
+          fifo_out_cost_usd: 0,
+          fifo_revenue_usd: 0,
+          fifo_gross_profit_usd: 0,
+          fifo_lots: [],
+          events: []
         };
       }
 
@@ -232,35 +357,85 @@ app.get('/api/stocks/summary', async (req, res) => {
       const unitPrice = Number(item.unit_price_cur) || 0;
       // Fatura kaleminin para birimi, yoksa fatura başlığının para birimi
       const itemCurrency = String(item.currency || invoice.currency || '').toUpperCase();
-
-      // Sadece USD kabul ediyoruz (kullanıcı tercihi: stok USD bazlı)
-      const unitUsd = (itemCurrency === 'USD' && unitPrice > 0) ? unitPrice : null;
-
-      const isIn  = invoice.direction === 'INCOMING';
-      const isOut = invoice.direction === 'OUTGOING';
-
-      if (isIn) {
-        grouped[key].total_in += qty;
-        if (unitUsd !== null) {
-          grouped[key].total_in_usd    += qty * unitUsd;
-          grouped[key].in_qty_for_avg_usd += qty;
-        }
-      }
-      if (isOut) {
-        grouped[key].total_out += qty;
-        if (unitUsd !== null) {
-          grouped[key].total_out_usd    += qty * unitUsd;
-          grouped[key].out_qty_for_avg_usd += qty;
+      // USD fiyat yoksa TRY + calculation_rate ile USD'ye çevir.
+      let unitUsd = null;
+      if (unitPrice > 0) {
+        if (itemCurrency === 'USD') {
+          unitUsd = unitPrice;
+        } else if (itemCurrency === 'TRY' && Number(invoice.calculation_rate) > 0) {
+          unitUsd = unitPrice / Number(invoice.calculation_rate);
         }
       }
 
-      grouped[key].current_stock = grouped[key].total_in - grouped[key].total_out;
+      grouped[key].events.push({
+        id: item.id,
+        qty,
+        unitUsd,
+        invoiceDate: item.invoices?.invoice_date || null,
+        direction: invoice.direction
+      });
+    });
+
+    Object.values(grouped).forEach((row) => {
+      row.events.sort((a, b) => {
+        const ad = String(a.invoiceDate || '');
+        const bd = String(b.invoiceDate || '');
+        if (ad !== bd) return ad.localeCompare(bd);
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      });
+
+      row.events.forEach((ev) => {
+        const isIn = ev.direction === 'INCOMING';
+        const isOut = ev.direction === 'OUTGOING';
+
+        if (isIn) {
+          row.total_in += ev.qty;
+          if (ev.unitUsd !== null) {
+            row.total_in_usd += ev.qty * ev.unitUsd;
+            row.in_qty_for_avg_usd += ev.qty;
+            row.fifo_lots.push({ remaining: ev.qty, unitUsd: ev.unitUsd });
+          }
+        }
+
+        if (isOut) {
+          row.total_out += ev.qty;
+          if (ev.unitUsd !== null) {
+            row.total_out_usd += ev.qty * ev.unitUsd;
+            row.out_qty_for_avg_usd += ev.qty;
+            row.fifo_revenue_usd += ev.qty * ev.unitUsd;
+          }
+
+          // FIFO: çıkışı en eski giriş lotlarından düş
+          let qtyToConsume = ev.qty;
+          let thisOutFifoCost = 0;
+          while (qtyToConsume > 0 && row.fifo_lots.length > 0) {
+            const lot = row.fifo_lots[0];
+            const consumeQty = Math.min(qtyToConsume, lot.remaining);
+            const consumeCost = consumeQty * lot.unitUsd;
+            row.fifo_out_cost_usd += consumeCost;
+            thisOutFifoCost += consumeCost;
+            lot.remaining -= consumeQty;
+            qtyToConsume -= consumeQty;
+            if (lot.remaining <= 0) row.fifo_lots.shift();
+          }
+
+          // Brüt karı sadece satış USD karşılığı biliniyorsa hesapla.
+          if (ev.unitUsd !== null) {
+            const thisOutRevenue = ev.qty * ev.unitUsd;
+            row.fifo_gross_profit_usd += (thisOutRevenue - thisOutFifoCost);
+          }
+        }
+      });
+
+      row.current_stock = row.total_in - row.total_out;
     });
 
     const summary = Object.values(grouped).map((row) => {
+      const productMeta = row.sku ? productByCode.get(String(row.sku).trim()) : null;
       const avgInUnitUsd  = row.in_qty_for_avg_usd  > 0 ? (row.total_in_usd  / row.in_qty_for_avg_usd)  : null;
       const avgOutUnitUsd = row.out_qty_for_avg_usd > 0 ? (row.total_out_usd / row.out_qty_for_avg_usd) : null;
-      const stockUsd = avgInUnitUsd !== null ? row.current_stock * avgInUnitUsd : null;
+      const fifoStockUsd = row.fifo_lots.reduce((acc, lot) => acc + (Number(lot.remaining || 0) * Number(lot.unitUsd || 0)), 0);
+      const stockUsd = row.in_qty_for_avg_usd > 0 ? fifoStockUsd : (row.current_stock > 0 ? null : 0);
       return {
         product_name: row.product_name,
         sku: row.sku,
@@ -270,7 +445,12 @@ app.get('/api/stocks/summary', async (req, res) => {
         in_unit_usd: avgInUnitUsd,
         out_unit_usd: avgOutUnitUsd,
         stock_usd: stockUsd,
-        total_out_usd: row.total_out_usd
+        total_out_usd: row.total_out_usd,
+        fifo_cogs_usd: row.fifo_out_cost_usd,
+        fifo_revenue_usd: row.fifo_revenue_usd,
+        fifo_gross_profit_usd: row.fifo_gross_profit_usd,
+        reserved_quantity: Number(productMeta?.reserved_quantity || 0),
+        gift_quantity: Number(productMeta?.gift_quantity || 0)
       };
     }).sort((a, b) => {
       if (b.current_stock !== a.current_stock) return b.current_stock - a.current_stock;
@@ -283,8 +463,20 @@ app.get('/api/stocks/summary', async (req, res) => {
       acc.current_qty   += Number(row.current_stock || 0);
       acc.stock_usd     += Number(row.stock_usd     || 0);
       acc.total_out_usd += Number(row.total_out_usd || 0);
+      acc.fifo_cogs_usd += Number(row.fifo_cogs_usd || 0);
+      acc.fifo_revenue_usd += Number(row.fifo_revenue_usd || 0);
+      acc.fifo_gross_profit_usd += Number(row.fifo_gross_profit_usd || 0);
       return acc;
-    }, { total_in_qty: 0, total_out_qty: 0, current_qty: 0, stock_usd: 0, total_out_usd: 0 });
+    }, {
+      total_in_qty: 0,
+      total_out_qty: 0,
+      current_qty: 0,
+      stock_usd: 0,
+      total_out_usd: 0,
+      fifo_cogs_usd: 0,
+      fifo_revenue_usd: 0,
+      fifo_gross_profit_usd: 0
+    });
 
     res.status(200).json({ data: summary, stats });
   } catch (err) {
@@ -293,7 +485,344 @@ app.get('/api/stocks/summary', async (req, res) => {
   }
 });
 
-// 3. GET ROUTE: Faturaları veritabanından çekip UI'a gönderen yeni kapımız
+// ─── STOK HAREKETLERİ: invoice_items + invoices join ─────────────────────────
+app.get('/api/stocks/movements', async (req, res) => {
+  try {
+    const { data: items, error } = await supabase
+      .from('invoice_items')
+      .select(`
+        id,
+        product_name,
+        product_code,
+        quantity,
+        unit_price_cur,
+        currency,
+        invoices!invoice_items_invoice_id_fkey (
+          invoice_no,
+          invoice_date,
+          direction,
+          currency,
+          companies ( name )
+        )
+      `)
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (error) throw error;
+
+    const movements = (items || [])
+      .filter(item => item.invoices)
+      .map(item => ({
+        invoice_date:   item.invoices.invoice_date,
+        direction:      item.invoices.direction,
+        invoice_no:     item.invoices.invoice_no,
+        company_name:   item.invoices.companies?.name || '—',
+        product_name:   item.product_name,
+        sku:            item.product_code,
+        quantity:       item.quantity,
+        unit_price_cur: item.unit_price_cur,
+        currency:       item.currency || item.invoices.currency,
+      }));
+
+    res.json(movements);
+  } catch (err) {
+    console.error('Stok Hareketleri Hatası:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── TÜM BEKLEYEN SİPARİŞLER (stok sayfası için) ─────────────────────────────
+app.get('/api/companies/by-vkn', async (req, res) => {
+  try {
+    const vkn = String(req.query.vkn || '').trim();
+    if (!vkn) return res.status(400).json({ error: 'VKN zorunlu' });
+    const { data, error } = await supabase
+      .from('companies')
+      .select('id, name, vkn_tckn')
+      .eq('vkn_tckn', vkn)
+      .single();
+    if (error || !data) return res.status(404).json({ error: 'Firma bulunamadı' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/products/by-code', async (req, res) => {
+  try {
+    const code = String(req.query.code || '').trim();
+    if (!code) return res.status(400).json({ error: 'Ürün kodu zorunlu' });
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, product_code, product_name')
+      .eq('product_code', code)
+      .single();
+    if (error || !data) return res.status(404).json({ error: 'Ürün bulunamadı' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/purchase-orders', async (req, res) => {
+  try {
+    const companyVkn = String(req.body?.company_vkn || '').trim();
+    const companyName = String(req.body?.company_name || '').trim();
+    const inputPoNumber = String(req.body?.po_number || '').trim();
+    const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+
+    const items = rawItems
+      .map((it) => ({
+        product_code: String(it?.product_code || '').trim(),
+        ordered_qty: Number(it?.ordered_qty || 0)
+      }))
+      .filter((it) => it.product_code && it.ordered_qty > 0);
+
+    if (!companyVkn || items.length === 0) {
+      return res.status(400).json({ error: 'company_vkn ve en az bir ürün satırı zorunlu.' });
+    }
+
+    // Firma bul / yoksa isim geldiyse oluştur
+    let { data: company } = await supabase
+      .from('companies')
+      .select('id, name')
+      .eq('vkn_tckn', companyVkn)
+      .single();
+
+    if (!company) {
+      if (!companyName) return res.status(400).json({ error: 'Firma sistemde yok. Firma adı girin.' });
+      const { data: createdCompany, error: companyInsertErr } = await supabase
+        .from('companies')
+        .insert({ vkn_tckn: companyVkn, name: companyName })
+        .select('id, name')
+        .single();
+      if (companyInsertErr) throw companyInsertErr;
+      company = createdCompany;
+    }
+
+    const uniqueCodes = [...new Set(items.map((x) => x.product_code))];
+    const { data: products, error: productsErr } = await supabase
+      .from('products')
+      .select('id, product_code, product_name')
+      .in('product_code', uniqueCodes);
+    if (productsErr) throw productsErr;
+    const productMap = new Map((products || []).map((p) => [p.product_code, p]));
+    const missingCode = uniqueCodes.find((code) => !productMap.has(code));
+    if (missingCode) return res.status(400).json({ error: `Ürün kodu bulunamadı: ${missingCode}` });
+
+    const generatedPoNumber = `PO-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
+    const poNumber = inputPoNumber || generatedPoNumber;
+
+    const { data: po, error: poErr } = await supabase
+      .from('purchase_orders')
+      .insert({
+        po_number: poNumber,
+        company_id: company.id,
+        status: 'Bekliyor'
+      })
+      .select('id, po_number')
+      .single();
+    if (poErr) throw poErr;
+
+    const mergedByProduct = new Map();
+    items.forEach((it) => {
+      if (!mergedByProduct.has(it.product_code)) {
+        mergedByProduct.set(it.product_code, 0);
+      }
+      mergedByProduct.set(it.product_code, mergedByProduct.get(it.product_code) + it.ordered_qty);
+    });
+
+    const itemRows = Array.from(mergedByProduct.entries()).map(([productCode, qty]) => {
+      const product = productMap.get(productCode);
+      return {
+        purchase_order_id: po.id,
+        product_id: product.id,
+        ordered_qty: qty,
+        received_qty: 0
+      };
+    });
+
+    const { error: itemErr } = await supabase
+      .from('purchase_order_items')
+      .insert(itemRows);
+    if (itemErr) throw itemErr;
+
+    res.status(201).json({ message: 'Backorder kaydedildi.', po_number: po.po_number, item_count: itemRows.length });
+  } catch (err) {
+    console.error('POST /api/purchase-orders hatası:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/purchase-order-items/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const orderedQty = Number(req.body?.ordered_qty);
+    if (!id) return res.status(400).json({ error: 'Kalem id zorunlu.' });
+    if (!Number.isFinite(orderedQty) || orderedQty <= 0) {
+      return res.status(400).json({ error: 'ordered_qty pozitif sayı olmalı.' });
+    }
+
+    const { data: existing, error: findErr } = await supabase
+      .from('purchase_order_items')
+      .select('id, received_qty')
+      .eq('id', id)
+      .single();
+    if (findErr || !existing) return res.status(404).json({ error: 'Sipariş kalemi bulunamadı.' });
+
+    // Gelen miktarın altına düşmeye izin vermeyelim
+    const minAllowed = Number(existing.received_qty || 0);
+    if (orderedQty < minAllowed) {
+      return res.status(400).json({ error: `Sipariş miktarı ${minAllowed} altına düşemez (gelen miktar).` });
+    }
+
+    const { error: updErr } = await supabase
+      .from('purchase_order_items')
+      .update({ ordered_qty: orderedQty })
+      .eq('id', id);
+    if (updErr) throw updErr;
+
+    res.json({ message: 'Sipariş kalemi güncellendi.' });
+  } catch (err) {
+    console.error('PUT /api/purchase-order-items/:id hatası:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/purchase-order-items/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'Kalem id zorunlu.' });
+
+    const { data: item, error: findErr } = await supabase
+      .from('purchase_order_items')
+      .select('id, purchase_order_id, received_qty')
+      .eq('id', id)
+      .single();
+    if (findErr || !item) return res.status(404).json({ error: 'Sipariş kalemi bulunamadı.' });
+
+    const { count: linkedInvoiceItemCount, error: linkedCountErr } = await supabase
+      .from('invoice_items')
+      .select('*', { count: 'exact', head: true })
+      .eq('purchase_order_item_id', id);
+    if (linkedCountErr) throw linkedCountErr;
+
+    // Gerçekten bağlı fatura kalemi varsa silmeyi engelle
+    if ((linkedInvoiceItemCount || 0) > 0) {
+      return res.status(400).json({ error: 'Bu kaleme bağlı fatura kaydı var, önce ilgili faturayı kaldırın.' });
+    }
+
+    // Gerçek bağlantı görünmese bile kalemde gelen miktar varsa silmeyi engelle.
+    // Bu durum geçmiş veri tutarsızlığı olsa dahi yanlışlıkla veri kaybını önler.
+    if (Number(item.received_qty || 0) > 0) {
+      return res.status(400).json({ error: 'Bu kaleme bağlı gelen miktar var, silinemez.' });
+    }
+
+    const { error: delErr } = await supabase
+      .from('purchase_order_items')
+      .delete()
+      .eq('id', id);
+    if (delErr) throw delErr;
+
+    // Siparişte hiç kalem kalmadıysa ana siparişi de temizle
+    const { count, error: countErr } = await supabase
+      .from('purchase_order_items')
+      .select('*', { count: 'exact', head: true })
+      .eq('purchase_order_id', item.purchase_order_id);
+    if (countErr) throw countErr;
+
+    if ((count || 0) === 0) {
+      await supabase
+        .from('purchase_orders')
+        .delete()
+        .eq('id', item.purchase_order_id);
+    }
+
+    res.json({ message: 'Sipariş kalemi silindi.' });
+  } catch (err) {
+    console.error('DELETE /api/purchase-order-items/:id hatası:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/purchase-orders/all-pending', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('purchase_order_items')
+      .select(`
+        id,
+        ordered_qty,
+        received_qty,
+        purchase_order_id,
+        purchase_orders (
+          po_number,
+          order_date,
+          status,
+          companies ( name )
+        ),
+        products (
+          id,
+          product_code,
+          product_name
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('Tüm Bekleyen Siparişler Hatası:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- BACKORDER (PURCHASE ORDERS) ENDPOINTS ---
+app.get('/api/purchase-orders/pending-by-vkn', async (req, res) => {
+  try {
+    const { vkn } = req.query;
+    if (!vkn) return res.json([]);
+    
+    // Önce firmayı bulalım
+    const { data: company, error: companyError } = await supabase
+      .from('companies')
+      .select('id')
+      .eq('vkn_tckn', vkn)
+      .single();
+      
+    if (companyError || !company) {
+       return res.json([]);
+    }
+
+    const { data, error } = await supabase
+      .from('purchase_order_items')
+      .select(`
+        id,
+        ordered_qty,
+        received_qty,
+        purchase_order_id,
+        purchase_orders!inner (
+          po_number,
+          order_date,
+          company_id
+        ),
+        products!inner (
+          id,
+          product_code,
+          product_name
+        )
+      `)
+      .eq('purchase_orders.company_id', company.id);
+
+    if (error) throw error;
+
+    const pendingItems = data.filter(item => Number(item.ordered_qty) > Number(item.received_qty));
+    res.json(pendingItems);
+  } catch (err) {
+    console.error("GET /api/purchase-orders/pending-by-vkn hatası:", err);
+    res.status(500).json({ error: "Bekleyen siparişler alınırken hata oluştu." });
+  }
+});
+
 app.get('/api/invoices', async (req, res) => {
   try {
     // direction parametresini tarayıcıdan alıyoruz (?direction=INCOMING gibi)
@@ -329,9 +858,16 @@ app.put('/api/invoices/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { invoice, company, items } = req.body || {};
+    const shouldUpdateStock = req.body?.update_stock !== false;
     const payloadInvoice = invoice && typeof invoice === 'object' ? invoice : {};
     const payloadCompany = company && typeof company === 'object' ? company : {};
     const payloadItems = Array.isArray(items) ? items : [];
+
+    const { data: beforeItems, error: beforeItemsError } = await supabase
+      .from('invoice_items')
+      .select('quantity, purchase_order_item_id')
+      .eq('invoice_id', id);
+    if (beforeItemsError) throw beforeItemsError;
 
     const { data, error } = await supabase.rpc('update_invoice_transaction', {
       p_invoice_id: id,
@@ -341,6 +877,72 @@ app.put('/api/invoices/:id', async (req, res) => {
     });
 
     if (error) throw error;
+
+    if (shouldUpdateStock) {
+      const { data: afterItems, error: afterItemsError } = await supabase
+        .from('invoice_items')
+        .select('quantity, purchase_order_item_id')
+        .eq('invoice_id', id);
+      if (afterItemsError) throw afterItemsError;
+
+      const sumByPo = (rows) => {
+        const map = new Map();
+        (rows || []).forEach((r) => {
+          const poId = r.purchase_order_item_id;
+          if (!poId) return;
+          map.set(poId, (map.get(poId) || 0) + Number(r.quantity || 0));
+        });
+        return map;
+      };
+
+      const beforeMap = sumByPo(beforeItems);
+      const afterMap = sumByPo(afterItems);
+      const poIds = new Set([...beforeMap.keys(), ...afterMap.keys()]);
+      const touchedOrderIds = new Set();
+
+      for (const poId of poIds) {
+        const delta = (afterMap.get(poId) || 0) - (beforeMap.get(poId) || 0);
+        if (delta === 0) continue;
+
+        const { data: poi, error: poiError } = await supabase
+          .from('purchase_order_items')
+          .select('id, received_qty, purchase_order_id')
+          .eq('id', poId)
+          .single();
+        if (poiError || !poi) continue;
+
+        const newReceived = Math.max(0, Number(poi.received_qty || 0) + Number(delta));
+        const { error: updatePoiError } = await supabase
+          .from('purchase_order_items')
+          .update({ received_qty: newReceived })
+          .eq('id', poId);
+        if (updatePoiError) throw updatePoiError;
+
+        if (poi.purchase_order_id) touchedOrderIds.add(poi.purchase_order_id);
+      }
+
+      for (const orderId of touchedOrderIds) {
+        const { data: orderItems, error: orderItemsError } = await supabase
+          .from('purchase_order_items')
+          .select('ordered_qty, received_qty')
+          .eq('purchase_order_id', orderId);
+        if (orderItemsError) throw orderItemsError;
+
+        let nextStatus = 'Bekliyor';
+        if ((orderItems || []).length > 0) {
+          const allCompleted = orderItems.every(oi => Number(oi.received_qty || 0) >= Number(oi.ordered_qty || 0));
+          const anyReceived = orderItems.some(oi => Number(oi.received_qty || 0) > 0);
+          if (allCompleted) nextStatus = 'Tamamlandı';
+          else if (anyReceived) nextStatus = 'Kısmi Geldi';
+        }
+
+        const { error: updateOrderStatusError } = await supabase
+          .from('purchase_orders')
+          .update({ status: nextStatus })
+          .eq('id', orderId);
+        if (updateOrderStatusError) throw updateOrderStatusError;
+      }
+    }
 
     res.json({ message: "Fatura başarıyla güncellendi", data });
 
@@ -359,10 +961,69 @@ app.delete('/api/invoices/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1- Önce faturanın içindeki 'ürünleri' (invoice_items) temizleyelim ki askıda kalmasın
-    await supabase.from('invoice_items').delete().eq('invoice_id', id);
+    // 1- Önce fatura kalemlerini çekip PO bağlantılarını geri alalım
+    const { data: itemsToDelete, error: itemsFetchError } = await supabase
+      .from('invoice_items')
+      .select('id, quantity, purchase_order_item_id')
+      .eq('invoice_id', id);
+    if (itemsFetchError) throw itemsFetchError;
 
-    // 2- Sonra asıl faturayı siliyoruz
+    const touchedOrderIds = new Set();
+
+    for (const item of (itemsToDelete || [])) {
+      if (!item.purchase_order_item_id) continue;
+
+      const { data: poi, error: poiError } = await supabase
+        .from('purchase_order_items')
+        .select('id, received_qty, purchase_order_id')
+        .eq('id', item.purchase_order_item_id)
+        .single();
+      if (poiError || !poi) continue;
+
+      const qtyToRollback = Number(item.quantity || 0);
+      const currentReceived = Number(poi.received_qty || 0);
+      const newReceived = Math.max(0, currentReceived - qtyToRollback);
+
+      const { error: poiUpdateError } = await supabase
+        .from('purchase_order_items')
+        .update({ received_qty: newReceived })
+        .eq('id', poi.id);
+      if (poiUpdateError) throw poiUpdateError;
+
+      if (poi.purchase_order_id) touchedOrderIds.add(poi.purchase_order_id);
+    }
+
+    // 2- Faturanın içindeki ürünleri (invoice_items) sil
+    const { error: itemDeleteError } = await supabase
+      .from('invoice_items')
+      .delete()
+      .eq('invoice_id', id);
+    if (itemDeleteError) throw itemDeleteError;
+
+    // 3- Etkilenen siparişlerin durumunu yeniden hesapla
+    for (const orderId of touchedOrderIds) {
+      const { data: orderItems, error: orderItemsError } = await supabase
+        .from('purchase_order_items')
+        .select('ordered_qty, received_qty')
+        .eq('purchase_order_id', orderId);
+      if (orderItemsError) throw orderItemsError;
+
+      let nextStatus = 'Bekliyor';
+      if ((orderItems || []).length > 0) {
+        const allCompleted = orderItems.every(oi => Number(oi.received_qty || 0) >= Number(oi.ordered_qty || 0));
+        const anyReceived = orderItems.some(oi => Number(oi.received_qty || 0) > 0);
+        if (allCompleted) nextStatus = 'Tamamlandı';
+        else if (anyReceived) nextStatus = 'Kısmi Geldi';
+      }
+
+      const { error: orderStatusError } = await supabase
+        .from('purchase_orders')
+        .update({ status: nextStatus })
+        .eq('id', orderId);
+      if (orderStatusError) throw orderStatusError;
+    }
+
+    // 4- Sonra asıl faturayı siliyoruz
     const { error } = await supabase.from('invoices').delete().eq('id', id);
 
     if (error) throw error;
@@ -387,6 +1048,36 @@ app.delete('/api/invoices/:id', async (req, res) => {
 
 
 // ─── ÖDEME GEÇMİŞİ API'LERİ ──────────────────────────────────────────────────
+
+// Dashboard için ödeme kapanış özeti: invoice_id bazında son ödeme tarihi ve toplam ödeme
+app.get('/api/payments/closure-summary', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('payments')
+      .select('invoice_id, amount, payment_date');
+    if (error) throw error;
+
+    const map = {};
+    (data || []).forEach((p) => {
+      const invoiceId = p.invoice_id;
+      if (!invoiceId) return;
+      const amount = Number(p.amount || 0);
+      const payDate = String(p.payment_date || '');
+      if (!map[invoiceId]) {
+        map[invoiceId] = { total_paid: 0, last_payment_date: payDate || null };
+      }
+      map[invoiceId].total_paid += amount;
+      if (payDate && (!map[invoiceId].last_payment_date || payDate > map[invoiceId].last_payment_date)) {
+        map[invoiceId].last_payment_date = payDate;
+      }
+    });
+
+    res.status(200).json(map);
+  } catch (err) {
+    console.error('Ödeme kapanış özeti hatası:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Bir faturanın tüm ödemelerini tarihe göre sıralı getirir
 app.get('/api/invoices/:id/payments', async (req, res) => {
@@ -506,7 +1197,63 @@ app.delete('/api/payments/:id', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
+let dmoPyProcess = null;
+
+function startDmoPythonService() {
+  const shouldAutoStart = String(process.env.DMO_PY_AUTOSTART || 'true').toLowerCase() !== 'false';
+  if (!shouldAutoStart) {
+    console.log('DMO Python auto-start kapalı (DMO_PY_AUTOSTART=false).');
+    return;
+  }
+
+  const appPyPath = path.join(__dirname, 'app.py');
+  if (!fs.existsSync(appPyPath)) {
+    console.warn('DMO Python servisi başlatılmadı: app.py bulunamadı.');
+    return;
+  }
+
+  dmoPyProcess = spawn('python3', [appPyPath], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  dmoPyProcess.stdout.on('data', (chunk) => {
+    const msg = String(chunk || '').trim();
+    if (msg) console.log(`[DMO-PY] ${msg}`);
+  });
+
+  dmoPyProcess.stderr.on('data', (chunk) => {
+    const msg = String(chunk || '').trim();
+    if (msg) console.warn(`[DMO-PY] ${msg}`);
+  });
+
+  dmoPyProcess.on('exit', (code, signal) => {
+    console.warn(`[DMO-PY] süreç sonlandı (code=${code}, signal=${signal || '-'})`);
+    dmoPyProcess = null;
+  });
+
+  console.log('DMO Python servisi başlatıldı (python3 app.py).');
+}
+
+function stopDmoPythonService() {
+  if (dmoPyProcess && !dmoPyProcess.killed) {
+    dmoPyProcess.kill('SIGTERM');
+  }
+}
+
+process.on('SIGINT', () => {
+  stopDmoPythonService();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  stopDmoPythonService();
+  process.exit(0);
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log("Supabase URL Check:", process.env.SUPABASE_URL ? "Loaded ✅" : "Not Found ❌");
+  startDmoPythonService();
 });

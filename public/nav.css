@@ -21,7 +21,7 @@ html {
   gap: 10px;
 }
 
-/* 5 ana sekme eşit genişlik; çıkış ayrı */
+/* Ana sekmeler; çıkış ayrı */
 .nav-cluster {
   position: relative;
   display: flex;
@@ -61,8 +61,7 @@ html {
 .nav-links-row {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
   gap: 4px;
   align-items: stretch;
   min-height: 40px;
@@ -72,8 +71,8 @@ html {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  min-width: 0;
+  width: auto;
+  min-width: 96px;
   padding: 8px 10px;
   margin: 0;
   font: inherit;

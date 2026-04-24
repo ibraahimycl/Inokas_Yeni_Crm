@@ -9,7 +9,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="faturalar.css?v=bulk-modal-contrast-1">
+  <link rel="stylesheet" href="faturalar.css?v=company-dropdown-overlay-1">
   <link rel="stylesheet" href="nav.css?v=nav-slide-4-gutter">
 </head>
 
@@ -26,11 +26,9 @@
       <div class="nav-cluster">
         <span class="nav-pill" id="navPill" aria-hidden="true"></span>
         <div class="nav-links-row" role="navigation" aria-label="Ana menü">
-          <button type="button" class="nav-link" data-nav-id="siparis">Siparişler</button>
-          <button type="button" class="nav-link" data-nav-id="teklif">Teklifler</button>
           <button type="button" class="nav-link active" data-nav-id="faturalar">Faturalar</button>
           <a href="/stok.html" class="nav-link" data-nav-id="stok">Stok</a>
-          <a href="/cari-analiz.html" class="nav-link" data-nav-id="cari">Cari Analiz</a>
+          <a href="/dmo/dmo.html" class="nav-link" data-nav-id="dmo">DMO</a>
         </div>
       </div>
       <button type="button" class="nav-link nav-link--logout logout">Çıkış</button>
@@ -48,9 +46,9 @@
       </button>
     </div>
 
-    <!-- Ödeme İlerleme Barları: TL ve döviz bazında toplam ödenen / kalan görsel özeti -->
-    <section id="summaryCardsContainer" style="margin: 0 0 20px 0; display:flex; flex-direction:column; gap:12px;">
-      <!-- JS tarafından renderSummaryBars() ile doldurulur -->
+    <!-- KPI Dashboard -->
+    <section id="summaryCardsContainer" class="invoice-dashboard">
+      <!-- JS tarafından doldurulur -->
     </section>
 
 
@@ -122,8 +120,8 @@
 
         <div class="action-group" style="display:flex; gap:12px; flex-wrap:wrap;">
           <button id="btnToggleShowAll" class="btn btn-primary" onclick="toggleShowAll()">Tümünü Göster</button>
-          <button type="button" class="btn btn-secondary" onclick="openBulkUploadModal()">Toplu XML</button>
-          <button class="btn btn-primary" onclick="openInvoiceModal()">＋ Yeni Fatura Ekle</button>
+          <button type="button" id="btnBulkXml" class="btn btn-secondary" onclick="openBulkUploadModal()">Toplu XML</button>
+          <button id="btnNewInvoice" class="btn btn-primary" onclick="openInvoiceModal()">＋ Yeni Fatura Ekle</button>
         </div>
       </div>
 
@@ -324,9 +322,15 @@
         </div>
 
         <!-- ALT BUTONLAR -->
-        <div class="invoice-modal-footer">
-          <button type="button" class="btn btn-secondary" onclick="closeInvoiceModal()">İptal</button>
-          <button type="submit" form="invoiceForm" class="btn btn-success">💾 Faturayı Kaydet</button>
+        <div class="invoice-modal-footer" style="display:flex; justify-content:space-between; align-items:center;">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; font-weight:600; color:#334155;">
+            <input type="checkbox" id="f_update_stock" checked style="width:16px; height:16px; accent-color:var(--primary);">
+            Stokları ve Siparişleri Güncelle
+          </label>
+          <div style="display:flex; gap:12px;">
+            <button type="button" class="btn btn-secondary" onclick="closeInvoiceModal()">İptal</button>
+            <button type="submit" form="invoiceForm" class="btn btn-success">💾 Faturayı Kaydet</button>
+          </div>
         </div>
 
       </form>
@@ -387,9 +391,9 @@
               </div>
             </div>
 
-            <div style="background:#fff0f2; border:1px solid #ffe4e6; border-radius:10px; padding:10px 14px;">
-              <span style="font-size:10px; font-weight:800; color:#be123c; letter-spacing:0.5px; display:block;">GENEL TOPLAM</span>
-              <div id="detail_total" style="font-weight:800; font-size:16px; color:#e11d48; margin-top:3px;">-</div>
+            <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:10px; padding:10px 14px;">
+              <span style="font-size:10px; font-weight:800; color:#1d4ed8; letter-spacing:0.5px; display:block;">GENEL TOPLAM</span>
+              <div id="detail_total" style="font-weight:800; font-size:16px; color:#2563eb; margin-top:3px;">-</div>
             </div>
 
             <!-- Ödenen / Kalan özet -->
@@ -562,7 +566,7 @@
 
   <script src="nav-pill.js?v=nav-slide-3-ease"></script>
   <!-- ?v= bump on deploy so Railway/browser never serves stale faturalar.js -->
-  <script src="faturalar.js?v=20260422-per-tab-showall"></script>
+  <script src="faturalar.js?v=20260423-po-integration"></script>
 </body>
 
 </html>
