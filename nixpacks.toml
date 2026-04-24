@@ -3,5 +3,7 @@
 [variables]
 NIXPACKS_NODE_VERSION = "20"
 
+# Dikkat: `nixPkgs` tek başına yazılırsa varsayılan Node kurulumunu EZer.
+# Hem Node 20 hem Python 3 birlikte olmalı; yoksa `npm ci` → "npm: command not found".
 [phases.setup]
-nixPkgs = ["python3"]
+nixPkgs = ["nodejs_20", "python3"]
