@@ -1,8 +1,6 @@
 flask
 flask-cors
 pdfplumber
-numpy==1.26.4
-pandas==2.1.4
 requests
 gunicorn
 python-dotenv

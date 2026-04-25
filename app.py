@@ -1,12 +1,10 @@
 import random
 import traceback
-
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 import io
 import re
-import pandas as pd
 import pdfplumber
 from bs4 import BeautifulSoup
 import time
@@ -70,18 +68,6 @@ def extract_data(pdf_file):
         results["satinalma_siparis_no"] = m.group(1) if m else None
 
         # ── PAGE 2 ──────────────────────────────────────────────────────────
-        page2_text = pdf.pages[1].extract_text() or ""
-
-        # 4. Müşteri No
-        m = re.search(r"Müşteri\s*\n\s*No\s*[:\-]?\s*(\d+)", page2_text)
-        if not m:
-            m = re.search(r"No\s*:\s*(\d+)", page2_text)
-        results["musteri_no"] = m.group(1) if m else None
-
-        # 5. Müşteri Adı
-        m = re.search(r"Adı\s*[:\-]?\s*(.+)", page2_text)
-        results["musteri_adi"] = m.group(1).strip() if m else None
-
         # 6. Table
         table = pdf.pages[1].extract_table()
         if table:
@@ -107,20 +93,19 @@ def extract_data(pdf_file):
                             parts.append(cell.strip())
                     merged_header.append(" ".join(parts))
             else:
-                merged_header = [f"col_{i}" for i in range(len(data_rows[0]))]
+                merged_header = [f"col_{i}" for i in range(len(data_rows[0]))] if data_rows else []
 
-            df = pd.DataFrame(data_rows, columns=merged_header)
-
-            # Extract product code
+            # Build list of dicts — no pandas needed
             product_col = "MALZEMENIN CINSI(VARSA MARKA VE MODELI)"
-            if product_col in df.columns:
-                df["MALZEME_KODU"] = df[product_col].apply(
-                    lambda x: re.search(r"EPSON\s+(\S+)", x).group(1)
-                    if x and re.search(r"EPSON\s+(\S+)", x) else None
-                )
+            rows = []
+            for data_row in data_rows:
+                row_dict = dict(zip(merged_header, data_row))
+                val = row_dict.get(product_col) or ""
+                m = re.search(r"EPSON\s+(\S+)", val)
+                row_dict["MALZEME_KODU"] = m.group(1) if m else None
+                rows.append(row_dict)
 
-            # Convert to list of dicts for JSON
-            results["malzeme_tablosu"] = df.to_dict(orient="records")
+            results["malzeme_tablosu"] = rows
         else:
             results["malzeme_tablosu"] = []
 

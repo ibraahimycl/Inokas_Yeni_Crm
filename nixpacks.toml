@@ -5,8 +5,7 @@ nixPkgs = ["nodejs_20", "python311", "python311Packages.pip", "stdenv.cc.cc.lib"
 cmds = ["npm ci", "pip install -r requirements.txt --break-system-packages"]
 
 [variables]
-# This tells the system to look in the Nix library folder for libstdc++
-LD_LIBRARY_PATH = "$NIX_LDFLAGS:$LD_LIBRARY_PATH"
+LD_LIBRARY_PATH = "${stdenv.cc.cc.lib}/lib"
 
 [start]
 cmd = "node index.js"
